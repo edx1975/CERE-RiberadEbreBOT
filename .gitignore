@@ -1,0 +1,18 @@
+# Entorn virtual
+.venv310/
+venv/
+__pycache__/
+*.pyc
+
+# Fitxers temporals de Mac
+.DS_Store
+
+# Fitxers generats pel bot dins data/
+data/embeddings.npy
+data/faiss_index.index
+data/token_log.json
+
+# Carpeta i fitxers PDF generats
+pdf2ai.py
+pdfs/
+
