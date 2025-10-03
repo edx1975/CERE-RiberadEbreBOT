@@ -16,3 +16,4 @@ data/token_log.json
 pdf2ai.py
 pdfs/
 
+.env
