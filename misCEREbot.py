@@ -8,14 +8,13 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import openai
 from dotenv import load_dotenv
-import threading
-from http.server import SimpleHTTPRequestHandler, HTTPServer
+from sklearn.metrics.pairwise import cosine_similarity
 
 load_dotenv()
 
 # --- CONFIGURACIÓ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
 openai.api_key = OPENAI_API_KEY
 
 SYSTEM_PROMPT = (
@@ -32,10 +31,10 @@ TOKEN_LOG_FILE = os.path.join(DATA_DIR, "token_log.json")
 
 TOP_K = 5
 RESUME_TOKENS = 150
-CONTEXT_EXPIRY = 300  # segons
 
 # --- MEMÒRIA TEMPORAL ---
-user_context = {}  # clau: user_id, valor: {"last_topic", "last_embedding", "last_time", "topics_covered"}
+user_context = {}  # clau: user_id, valor: {"last_topic": str, "last_embedding": np.array, "last_time": timestamp, "topics_covered": set()}
+CONTEXT_EXPIRY = 300  # segons abans que s'esborri el context (5 minuts)
 
 # --- CARREGAR CORPUS ---
 corpus = []
@@ -50,18 +49,62 @@ with open(CORPUS_FILE, "r", encoding="utf-8") as f:
         except json.JSONDecodeError:
             print(f"⚠️ Línia descartada: {line}")
 
-# --- CARREGAR EMBEDDINGS EXISTENTS ---
+# --- CARREGAR O CALCULAR EMBEDDINGS AMB LOG ---
 if os.path.exists(EMBEDDINGS_FILE):
     embeddings = np.load(EMBEDDINGS_FILE)
     print(f"✅ Carregats {embeddings.shape[0]} embeddings existents.")
 else:
-    embeddings = np.zeros((0, 1536), dtype=np.float32)
+    embeddings = np.zeros((0, 1536), dtype=np.float32)  # si encara no existeix
+
+existing_count = embeddings.shape[0]
+new_docs = corpus[existing_count:]
+
+print(f"ℹ️ Total documents al corpus: {len(corpus)}")
+print(f"ℹ️ Documents amb embeddings existents: {existing_count}")
+print(f"ℹ️ Documents nous per processar: {len(new_docs)}")
+
+if new_docs:
+    new_embeddings = []
+    for i, entry in enumerate(new_docs, start=existing_count):
+        title = entry.get("title", "")
+        summary = entry.get("summary", "")
+        long_summary = entry.get("long_summary", "")
+        topics = entry.get("topics", [])
+        population = entry.get("population", "")
+        years = entry.get("years", "")
+
+        if not isinstance(topics, list):
+            topics = [str(topics)]
+
+        input_text = (
+            f"{title}. "
+            f"{summary}. "
+            f"{long_summary}. "
+            f"Topics: {', '.join(topics)}. "
+            f"Població: {population}. "
+            f"Període: {years}."
+        )
+
+        try:
+            resp = openai.embeddings.create(
+                input=input_text,
+                model="text-embedding-3-small"
+            )
+            new_embeddings.append(resp.data[0].embedding)
+            print(f"✅ Embedding calculat per document {i}: {title[:50]}...")
+        except Exception as e:
+            print(f"⚠️ Error calculant embedding per document {i}: {title[:50]}... -> {e}")
+
+    if new_embeddings:
+        new_embeddings = np.array(new_embeddings, dtype=np.float32)
+        embeddings = np.vstack([embeddings, new_embeddings])
+        np.save(EMBEDDINGS_FILE, embeddings)
+        print(f"✅ Embeddings nous afegits. Total embeddings actuals: {embeddings.shape[0]}")
 
 # --- CARREGAR FAISS ---
 d = embeddings.shape[1]
 index = faiss.IndexFlatL2(d)
-if embeddings.shape[0] > 0:
-    index.add(embeddings)
+index.add(embeddings)
 
 # --- FUNCIONS AUXILIARS ---
 def needs_expansion(user_query: str) -> bool:
@@ -127,7 +170,6 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 population = poble
                 break
 
-    # Extreure topics semàntics
     try:
         resp_topics = openai.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -193,7 +235,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
 
     try:
         resp = openai.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt}
@@ -225,25 +267,7 @@ app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
 
-# --- HEALTHCHECK HTTP SERVER ---
-def run_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    class HealthHandler(SimpleHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == "/":
-                self.send_response(200)
-                self.send_header("Content-type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"OK")
-            else:
-                self.send_error(404, "Not Found")
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"🌐 Healthcheck HTTP server listening on port {port}")
-    server.serve_forever()
-
-threading.Thread(target=run_health_server, daemon=True).start()
-
 # --- INICI BOT ---
 if __name__ == "__main__":
-    print("🤖 Bot amb corpus prioritzat, memòria temporal i healthcheck actiu...")
+    print("🤖 Bot amb corpus prioritzat, memòria temporal i resums actius...")
     app.run_polling()
