@@ -17,7 +17,7 @@ load_dotenv()
 
 # --- CONFIGURACIÓ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").string
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
 openai.api_key = OPENAI_API_KEY
 
 SYSTEM_PROMPT = (
