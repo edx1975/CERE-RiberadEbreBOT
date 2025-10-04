@@ -143,19 +143,26 @@ def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10, 
     if not fragments:
         return ["Escolta’m, però no tinc informació concreta sobre això."]
     
+    parts = []
+
+    if isinstance(fragments[0], str):
+        # fragments ja són textos generats
+        message = " ".join(fragments)
+        if len(message) > max_chars:
+            message = message[:max_chars].rsplit(".",1)[0] + "."
+        return [message]
+
     if list_mode:
-        parts = []
-        for idx, f in enumerate(fragments[:max_items]):
+        for f in fragments[:max_items]:
             title = f.get("title","Sense títol")
             text = f.get("long_summary","") or f.get("summary","")
             text = text.replace("\n"," ").strip()
-            if len(text) > 250:
-                text = text[:250].rsplit(".",1)[0] + "."
-            parts.append(f"{idx+1}. {title}: {text} (Font: F1)")
-        return ["\n".join(parts)]
-    
+            if len(text) > 200:
+                text = text[:200].rsplit(".",1)[0] + "."
+            parts.append(f"{title}: {text}")
+        message = "\n".join(parts)
     else:
-        parts = []
+        intro = ""  # Ara no afegim cap frase fixa
         for f in fragments:
             text = f.get("long_summary","") or f.get("summary","")
             if expand and f.get("summary"):
@@ -165,7 +172,10 @@ def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10, 
         body = " ".join(parts)
         if len(body) > max_chars:
             body = body[:max_chars].rsplit(".",1)[0] + "."
-        return [f"{body} (Font: F1 - {fragments[0].get('title','')})"]
+        message = f"{body}\nFont: F1 ({fragments[0].get('title','')})"
+
+    return [message]
+
 
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
