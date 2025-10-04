@@ -4,6 +4,7 @@ import asyncio
 import time
 import numpy as np
 import faiss
+from difflib import get_close_matches
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import openai
@@ -23,7 +24,6 @@ SYSTEM_PROMPT = (
     "Si l’usuari demana detalls, amplia la resposta amb més informació disponible, sinó respon breu."
 )
 
-# --- DIRECTORIS I ARXIUS ---
 DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus.jsonl")
 EMBEDDINGS_FILE = os.path.join(DATA_DIR, "embeddings.npy")
@@ -36,9 +36,7 @@ with open(DICCIONARI_PATXETI_FILE, "r", encoding="utf-8") as f:
 
 TOP_K = 5
 CONTEXT_EXPIRY = 600  # 10 minuts
-
-# --- MEMÒRIA TEMPORAL ---
-user_context = {}  # user_id -> {"last_topic": str, "last_embedding": np.array, "last_time": timestamp, "topics_covered": set()}
+user_context = {}  # memòria temporal
 
 # --- CARREGAR CORPUS ---
 corpus = []
@@ -48,8 +46,7 @@ with open(CORPUS_FILE, "r", encoding="utf-8") as f:
         if not line:
             continue
         try:
-            entry = json.loads(line)
-            corpus.append(entry)
+            corpus.append(json.loads(line))
         except json.JSONDecodeError:
             print(f"Línia descartada: {line}")
 
@@ -108,11 +105,11 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
     D, I = index.search(q_emb, top_k*3)
     candidates = [corpus[i] for i in I[0]]
 
-    # Filtrar per població si és passada
     if population:
-        candidates = [f for f in candidates if f.get("population","").lower() == population.lower()]
+        pop_fragments = [f for f in candidates if population.lower() in f.get("population","").lower()]
+        other_fragments = [f for f in candidates if population.lower() not in f.get("population","").lower()]
+        candidates = pop_fragments + other_fragments
 
-    # Filtrar per topics si hi ha
     if topics:
         filtered = [
             f for f in candidates
@@ -138,7 +135,7 @@ def summarize_fragments(fragments, expand=False):
             base += f"\nDetalls: {f.get('long_summary')}"
         base += f"\nFont: F{idx} ({f.get('title','')})"
         parts.append(base)
-    return "\n\n".join(parts)
+    return "\n\n".join(parts)  # doble salt de línia entre fragments
 
 def log_tokens(user_id, tokens_used, cost):
     try:
@@ -156,29 +153,27 @@ def log_tokens(user_id, tokens_used, cost):
     except Exception:
         pass
 
-def inject_patxeti(text):
-    words = text.split()
-    for i, w in enumerate(words):
-        lw = w.lower().strip(",.!?")
-        if lw in DICCIONARI_PATXETI:
-            words[i] = f"{DICCIONARI_PATXETI[lw]}"
-    return " ".join(words)
+def tradueix_patxeti(paraula):
+    p = paraula.lower()
+    return DICCIONARI_PATXETI.get(p, paraula)  # retorna paraula si no hi és
+
+# --- FUNCIO DE VERIFICACIÓ DE LLOC ---
+def verify_location(user_input):
+    """
+    Retorna el nom correcte d'un lloc si l'usuari s'ha equivocat.
+    """
+    all_places = list({entry.get("population","").lower() for entry in corpus})
+    matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
+    return matches[0].capitalize() if matches else None
 
 # --- FUNCIO PRINCIPAL ---
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
-    # Detectar nom de lloc correcte
+    # Verificar noms de llocs
     correct_loc = verify_location(prompt)
-    if correct_loc and correct_loc.lower() != prompt.lower():
-        # Trobar la població associada al lloc
-        entry = next((e for e in corpus if e.get("title","").lower() == correct_loc.lower()), None)
-        poblacio = entry.get("population","desconeguda") if entry else "desconeguda"
-        # Missatge inicial indicant correcció
-        prefix = f"Ah, voldràs dir «{correct_loc}»? Doncs sí, està a {poblacio}.\n\n"
-        prompt = correct_loc  # Reassignem el prompt per a la cerca semàntica
-    else:
-        prefix = ""
+    if correct_loc and (not population or correct_loc.lower() != population.lower()):
+        return f"Ah, voldràs dir {correct_loc}? Doncs anem a veure què en puc dir…"
 
     if not population and user_id and user_id in user_context:
         last_topic = user_context[user_id].get("last_topic","")
@@ -187,7 +182,6 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 population = poble
                 break
 
-    # Temes semàntics
     try:
         resp_topics = openai.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -205,7 +199,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     fragments = semantic_search(prompt, topics=topics, population=population)
     if not fragments:
         if strict_corpus:
-            return prefix + "Escolta’m, però no tinc informació concreta al corpus sobre això."
+            return "Escolta’m, però no tinc informació concreta al corpus sobre això."
         try:
             resp = openai.chat.completions.create(
                 model="gpt-4o-mini",
@@ -215,9 +209,9 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 ],
                 max_tokens=500
             )
-            return prefix + resp.choices[0].message.content.strip()
+            return resp.choices[0].message.content.strip()
         except Exception as e:
-            return prefix + f"Error amb OpenAI: {e}"
+            return f"Error amb OpenAI: {e}"
 
     expand = needs_expansion(prompt)
     summary = summarize_fragments(fragments, expand=expand)
@@ -233,7 +227,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     except Exception:
         pass
 
-    user_prompt = prefix + f"Aquí tens la informació trobada al corpus:\n\n{summary}\n\nPregunta: {prompt}"
+    user_prompt = f"Aquí tens la informació trobada al corpus:\n\n{summary}\n\nPregunta: {prompt}"
 
     try:
         resp = openai.chat.completions.create(
@@ -250,8 +244,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
             log_tokens(user_id, usage.total_tokens, cost)
         return resp.choices[0].message.content.strip()
     except Exception as e:
-        return prefix + f"Error amb OpenAI: {e}"
-
+        return f"Error amb OpenAI: {e}"
 
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -269,7 +262,10 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
 
-    # Consulta al corpus / OpenAI
+    # Traducció patxetí dins el text
+    for paraula in user_text.lower().split():
+        user_text = user_text.replace(paraula, tradueix_patxeti(paraula))
+
     resp = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
     await update.message.reply_text(resp)
 
