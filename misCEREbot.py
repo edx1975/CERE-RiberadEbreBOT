@@ -85,7 +85,7 @@ if embeddings.shape[0] > 0:
 
 
 # --- TF-IDF + SVD lleuger ---
-vectorizer = TfidfVectorizer(max_features=5000, stop_words="spanish")
+vectorizer = TfidfVectorizer(max_features=5000)
 tfidf_matrix = vectorizer.fit_transform(corpus_texts)
 svd = TruncatedSVD(n_components=min(SVD_DIM, tfidf_matrix.shape[1]), random_state=42)
 svd_matrix = svd.fit_transform(tfidf_matrix)
