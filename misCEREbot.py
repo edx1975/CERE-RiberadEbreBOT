@@ -168,6 +168,18 @@ def inject_patxeti(text):
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
+    # Detectar nom de lloc correcte
+    correct_loc = verify_location(prompt)
+    if correct_loc and correct_loc.lower() != prompt.lower():
+        # Trobar la població associada al lloc
+        entry = next((e for e in corpus if e.get("title","").lower() == correct_loc.lower()), None)
+        poblacio = entry.get("population","desconeguda") if entry else "desconeguda"
+        # Missatge inicial indicant correcció
+        prefix = f"Ah, voldràs dir «{correct_loc}»? Doncs sí, està a {poblacio}.\n\n"
+        prompt = correct_loc  # Reassignem el prompt per a la cerca semàntica
+    else:
+        prefix = ""
+
     if not population and user_id and user_id in user_context:
         last_topic = user_context[user_id].get("last_topic","")
         for poble in ["Ginestar","Benissanet","Tivissa","Rasquera","Miravet"]:
@@ -175,7 +187,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 population = poble
                 break
 
-    # Extreure temes
+    # Temes semàntics
     try:
         resp_topics = openai.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -193,7 +205,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     fragments = semantic_search(prompt, topics=topics, population=population)
     if not fragments:
         if strict_corpus:
-            return "Escolta’m, però no tinc informació concreta al corpus sobre això."
+            return prefix + "Escolta’m, però no tinc informació concreta al corpus sobre això."
         try:
             resp = openai.chat.completions.create(
                 model="gpt-4o-mini",
@@ -203,9 +215,9 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 ],
                 max_tokens=500
             )
-            return inject_patxeti(resp.choices[0].message.content.strip())
+            return prefix + resp.choices[0].message.content.strip()
         except Exception as e:
-            return f"Error amb OpenAI: {e}"
+            return prefix + f"Error amb OpenAI: {e}"
 
     expand = needs_expansion(prompt)
     summary = summarize_fragments(fragments, expand=expand)
@@ -221,7 +233,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     except Exception:
         pass
 
-    user_prompt = f"Aquí tens la informació trobada al corpus sobre {population if population else 'la zona'}:\n\n{summary}\n\nPregunta: {prompt}"
+    user_prompt = prefix + f"Aquí tens la informació trobada al corpus:\n\n{summary}\n\nPregunta: {prompt}"
 
     try:
         resp = openai.chat.completions.create(
@@ -236,9 +248,10 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
         if usage and user_id:
             cost = (usage.total_tokens / 1000) * 0.001
             log_tokens(user_id, usage.total_tokens, cost)
-        return inject_patxeti(resp.choices[0].message.content.strip())
+        return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"Error amb OpenAI: {e}"
+        return prefix + f"Error amb OpenAI: {e}"
+
 
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
