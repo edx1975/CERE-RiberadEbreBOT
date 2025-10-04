@@ -34,7 +34,7 @@ DICCIONARI_PATXETI_FILE = os.path.join(DATA_DIR, "diccionari_patxeti.json")
 with open(DICCIONARI_PATXETI_FILE, "r", encoding="utf-8") as f:
     DICCIONARI_PATXETI = json.load(f)
 
-TOP_K = 5
+TOP_K = 10  # màxim elements a mostrar
 CONTEXT_EXPIRY = 600  # 10 minuts
 user_context = {}  # memòria temporal
 
@@ -65,8 +65,7 @@ if new_docs:
     for entry in new_docs:
         text = " ".join([
             entry.get("title",""),
-            entry.get("summary",""),
-            entry.get("long_summary",""),
+            entry.get("long_summary",""),  # prioritat long_summary
             " ".join(entry.get("topics", []))
         ])
         try:
@@ -124,6 +123,18 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
 
     return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
+def summarize_fragments(fragments, expand=False):
+    parts = []
+    for idx, f in enumerate(fragments, start=1):
+        # només mostrar long_summary resumit + font
+        text = f.get("long_summary","").replace("\n"," ").strip()
+        # limitar a 2 línies
+        lines = text.split(". ")
+        short_text = ". ".join(lines[:2]).strip()
+        base = f"{idx}. {short_text}\nFont: F{idx} ({f.get('title','')})"
+        parts.append(base)
+    return "\n\n".join(parts)  # doble salt de línia entre fragments
+
 def log_tokens(user_id, tokens_used, cost):
     try:
         if os.path.exists(TOKEN_LOG_FILE):
@@ -142,9 +153,12 @@ def log_tokens(user_id, tokens_used, cost):
 
 def tradueix_patxeti(paraula):
     p = paraula.lower()
-    return DICCIONARI_PATXETI.get(p, paraula)  # retorna paraula si no hi és
+    return DICCIONARI_PATXETI.get(p, paraula)
 
 def verify_location(user_input):
+    """
+    Retorna el nom correcte d'un lloc si l'usuari s'ha equivocat.
+    """
     all_places = list({entry.get("population","").lower() for entry in corpus})
     matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
     return matches[0].capitalize() if matches else None
@@ -153,9 +167,10 @@ def verify_location(user_input):
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
+    # Verificar noms de llocs sense interrompre la resposta
     correct_loc = verify_location(prompt)
-    if correct_loc and (not population or correct_loc.lower() != population.lower()):
-        return f"Ah, voldràs dir {correct_loc}? Doncs anem a veure què en puc dir…"
+    if correct_loc:
+        population = correct_loc
 
     if not population and user_id and user_id in user_context:
         last_topic = user_context[user_id].get("last_topic","")
@@ -196,29 +211,9 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
             return f"Error amb OpenAI: {e}"
 
     expand = needs_expansion(prompt)
-    
-    messages = []
-    for idx, f in enumerate(fragments[:10], start=1):
-        text = f.get("long_summary", "").strip().replace("\n", " ")
-        if expand:
-            summary_text = f.get("summary", "").strip().replace("\n", " ")
-            if summary_text and summary_text not in text:
-                text += " " + summary_text
-        if len(text) > 250:
-            text = text[:250].rsplit(" ", 1)[0] + "…"
-        part = f"{idx}. {text}\nFont: F{idx} ({f.get('title','')})"
-        messages.append(part)
+    summary = summarize_fragments(fragments, expand=expand)
 
-    final_messages = []
-    current_msg = ""
-    for part in messages:
-        if len(current_msg) + len(part) + 2 > 2000:
-            final_messages.append(current_msg.strip())
-            current_msg = ""
-        current_msg += part + "\n\n"
-    if current_msg.strip():
-        final_messages.append(current_msg.strip())
-
+    # guardar context
     try:
         emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
         if user_id:
@@ -230,7 +225,24 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     except Exception:
         pass
 
-    return final_messages
+    user_prompt = f"Aquí tens la informació trobada al corpus:\n\n{summary}\n\nPregunta: {prompt}"
+
+    try:
+        resp = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role":"system","content":SYSTEM_PROMPT},
+                {"role":"user","content":user_prompt}
+            ],
+            max_tokens=600
+        )
+        usage = getattr(resp, "usage", None)
+        if usage and user_id:
+            cost = (usage.total_tokens / 1000) * 0.001
+            log_tokens(user_id, usage.total_tokens, cost)
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Error amb OpenAI: {e}"
 
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -248,16 +260,12 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
 
+    # Traducció patxetí dins el text
     for paraula in user_text.lower().split():
         user_text = user_text.replace(paraula, tradueix_patxeti(paraula))
 
-    messages = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
-
-    if isinstance(messages, list):
-        for msg in messages:
-            await update.message.reply_text(msg)
-    else:
-        await update.message.reply_text(messages)
+    resp = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
+    await update.message.reply_text(resp)
 
 # --- CONFIGURACIÓ BOT ---
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
