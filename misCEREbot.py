@@ -3,7 +3,6 @@ import json
 import asyncio
 import time
 import numpy as np
-import faiss
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import openai
@@ -12,6 +11,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 import threading
 from http.server import SimpleHTTPRequestHandler, HTTPServer
+import faiss
+
+
 
 load_dotenv()
 
@@ -75,11 +77,13 @@ else:
 
 # --- CARREGAR HNSW FAISS ---
 d = embeddings.shape[1]
-index = faiss.IndexHNSWFlat(d, M=32)
+index = faiss.IndexHNSWFlat(d)
+index.hnsw.M = 32
 index.hnsw.efConstruction = 100
 index.hnsw.efSearch = 100
 if embeddings.shape[0] > 0:
     index.add(embeddings)
+
 
 # --- TF-IDF + SVD lleuger ---
 vectorizer = TfidfVectorizer(max_features=5000, stop_words="spanish")
