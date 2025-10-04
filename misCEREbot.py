@@ -40,19 +40,15 @@ user_context = {}  # memòria temporal
 
 # --- CARREGAR CORPUS ---
 corpus = []
-all_places = set()
-for line in open(CORPUS_FILE, "r", encoding="utf-8"):
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        entry = json.loads(line)
-        corpus.append(entry)
-        # afegir pobles i títols per verificació noms
-        all_places.add(entry.get("population","").lower())
-        all_places.add(entry.get("title","").lower())
-    except json.JSONDecodeError:
-        print(f"Línia descartada: {line}")
+with open(CORPUS_FILE, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            corpus.append(json.loads(line))
+        except json.JSONDecodeError:
+            print(f"Línia descartada: {line}")
 
 # --- CARREGAR / CREAR EMBEDDINGS ---
 if os.path.exists(EMBEDDINGS_FILE):
@@ -134,17 +130,16 @@ def summarize_fragments(fragments, expand=False):
         base = f"{idx}. {f.get('title','')}"
         if f.get("years"):
             base += f" (Període: {f['years']})"
-        # assegurar que long_summary >= summary
-        long_summary = f.get("long_summary") or ""
-        summary = f.get("summary") or ""
-        if len(long_summary) < len(summary):
-            long_summary = summary
-        base += f"\n{summary}"
-        if expand:
-            base += f"\nDetalls: {long_summary}"
+
+        # Prioritza long_summary si no s'amplia
+        if not expand and f.get("long_summary"):
+            base += f"\n{f.get('long_summary','')}"
+        else:
+            base += f"\n{f.get('summary','')}"
+
         base += f"\nFont: F{idx} ({f.get('title','')})"
         parts.append(base)
-    return "\n\n".join(parts)  # doble salt entre fragments
+    return "\n\n".join(parts)
 
 def log_tokens(user_id, tokens_used, cost):
     try:
@@ -166,10 +161,9 @@ def tradueix_patxeti(paraula):
     p = paraula.lower()
     return DICCIONARI_PATXETI.get(p, paraula)
 
+# --- FUNCIO DE VERIFICACIÓ DE LLOC ---
 def verify_location(user_input):
-    """
-    Retorna el nom correcte d'un lloc (poble, cova, monument) si l'usuari s'ha equivocat.
-    """
+    all_places = list({entry.get("population","").lower() for entry in corpus})
     matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
     return matches[0].capitalize() if matches else None
 
@@ -177,7 +171,7 @@ def verify_location(user_input):
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
-    # Correcció noms llocs
+    # Verificar noms de llocs
     correct_loc = verify_location(prompt)
     if correct_loc and (not population or correct_loc.lower() != population.lower()):
         return f"Ah, voldràs dir {correct_loc}? Doncs anem a veure què en puc dir…"
