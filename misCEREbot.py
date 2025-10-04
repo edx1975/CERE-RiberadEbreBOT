@@ -20,7 +20,7 @@ openai.api_key = OPENAI_API_KEY
 SYSTEM_PROMPT = (
     "Ets un bot expert en la Ribera d'Ebre (Ginestar, Benissanet, Tivissa, Rasquera i Miravet). "
     "Respón amb estil patxetí, proper i directe, aportant dades històriques del corpus. "
-    "Cada fet històric ha de portar la seva font citada (F1, F2…). "
+    "Cada fet històric ha de portar la seva font citada (F1, F2…) amb títol resumit. "
     "Si l’usuari demana detalls, amplia la resposta amb més informació disponible, sinó respon breu."
 )
 
@@ -65,7 +65,8 @@ if new_docs:
     for entry in new_docs:
         text = " ".join([
             entry.get("title",""),
-            entry.get("long_summary",""),  # Prioritzem long_summary
+            entry.get("summary",""),
+            entry.get("long_summary",""),
             " ".join(entry.get("topics", []))
         ])
         try:
@@ -92,11 +93,6 @@ def clean_expired_context():
 
 def needs_expansion(user_query: str) -> bool:
     triggers = ["detall", "detalls", "explica", "explicació", "amplia", "llarg", "més informació", "aprofund"]
-    return any(t in user_query.lower() for t in triggers)
-
-def is_list_query(user_query: str) -> bool:
-    # Paraules clau que indiquen que és una llista
-    triggers = ["llistam", "coses", "històries", "curiositats", "plantes", "menjars", "fets", "events"]
     return any(t in user_query.lower() for t in triggers)
 
 def semantic_search(query, top_k=TOP_K, topics=None, population=None):
@@ -128,49 +124,29 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
 
     return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
-def truncate_text(text, max_chars=150):
-    """Retorna text tallat a punt o coma propera abans de max_chars"""
-    if len(text) <= max_chars:
-        return text
-    # Busquem punt proper abans de max_chars
-    last_dot = text.rfind('.', 0, max_chars)
-    if last_dot != -1:
-        return text[:last_dot+1].strip()
-    # Busquem coma propera
-    last_comma = text.rfind(',', 0, max_chars)
-    if last_comma != -1:
-        return text[:last_comma+1].strip()
-    # Tall si no hi ha punt o coma
-    return text[:max_chars].strip()
-
-def summarize_list_short(fragments):
-    """Genera llista curta, cada element <150 caràcters + població"""
-    messages = []
-    current_msg = ""
-    for f in fragments:
-        text = truncate_text(f.get("long_summary","")) + f" ({f.get('population','')})"
-        if current_msg:
-            candidate_msg = current_msg + "\n" + f"- " + text
-        else:
-            candidate_msg = "- " + text
-        if len(candidate_msg) > 4000:  # Màxim Telegram
-            messages.append(current_msg)
-            current_msg = "- " + text
-        else:
-            current_msg = candidate_msg
-    if current_msg:
-        messages.append(current_msg)
-    return messages
-
-def summarize_fragments(fragments, expand=False):
+def summarize_fragments(fragments, expand=False, list_mode=False):
     parts = []
-    for idx, f in enumerate(fragments, start=1):
-        base = f"{idx}. {f.get('long_summary','')}"
-        if expand and f.get("summary"):
-            base += f"\nDetalls: {f.get('summary')}"
-        base += f"\nFont: F{idx} ({f.get('title','')})"
-        parts.append(base)
-    return "\n\n".join(parts)  # doble salt de línia entre fragments
+    for f in fragments:
+        text = f.get("long_summary","") if f.get("long_summary") else f.get("summary","")
+        if list_mode:
+            # màxim 150 caràcters, tallar per punt o coma prop dels 150
+            text = text.strip()
+            if len(text) > 150:
+                cutoff = text.find(".", 100)
+                if cutoff == -1 or cutoff > 150:
+                    cutoff = text.find(",", 140)
+                    if cutoff == -1:
+                        cutoff = 150
+                text = text[:cutoff+1].strip()
+            text = f"{text} ({f.get('population','')})"
+        else:
+            # text seguit, prioritzar long_summary
+            base = text
+            if expand and f.get("summary"):
+                base += f"\nDetalls: " + f.get("summary")
+            text = f"{base}\nFont: F1 ({f.get('title','')})"
+        parts.append(text)
+    return parts
 
 def log_tokens(user_id, tokens_used, cost):
     try:
@@ -190,20 +166,23 @@ def log_tokens(user_id, tokens_used, cost):
 
 def tradueix_patxeti(paraula):
     p = paraula.lower()
-    return DICCIONARI_PATXETI.get(p, paraula)  # retorna paraula si no hi és
+    return DICCIONARI_PATXETI.get(p, paraula)
 
 def verify_location(user_input):
-    """Retorna el nom correcte d'un lloc si l'usuari s'ha equivocat"""
+    """
+    Retorna el nom correcte d'un lloc si l'usuari s'ha equivocat.
+    """
     all_places = list({entry.get("population","").lower() for entry in corpus})
     matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
     return matches[0].capitalize() if matches else None
 
+# --- FUNCIO PRINCIPAL ---
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
-    # Verificar noms de llocs
+    # Verificar noms de lloc sense mostrar missatge "Ah voldràs dir"
     correct_loc = verify_location(prompt)
-    if correct_loc:
+    if correct_loc and (not population or correct_loc.lower() != population.lower()):
         population = correct_loc
 
     if not population and user_id and user_id in user_context:
@@ -212,6 +191,10 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
             if poble.lower() in last_topic.lower():
                 population = poble
                 break
+
+    # Determinar si és llista o tema concret
+    list_keywords = ["llistat", "llista", "coses", "histories", "curiositats", "plants", "menjars", "fetes"]
+    is_list = any(k in prompt.lower() for k in list_keywords)
 
     try:
         resp_topics = openai.chat.completions.create(
@@ -230,7 +213,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     fragments = semantic_search(prompt, topics=topics, population=population)
     if not fragments:
         if strict_corpus:
-            return "Escolta’m, però no tinc informació concreta al corpus sobre això."
+            return ["Escolta’m, però no tinc informació concreta al corpus sobre això."]
         try:
             resp = openai.chat.completions.create(
                 model="gpt-4o-mini",
@@ -240,18 +223,37 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 ],
                 max_tokens=500
             )
-            return resp.choices[0].message.content.strip()
+            return [resp.choices[0].message.content.strip()]
         except Exception as e:
-            return f"Error amb OpenAI: {e}"
+            return [f"Error amb OpenAI: {e}"]
 
     expand = needs_expansion(prompt)
-    if is_list_query(prompt):
-        messages = summarize_list_short(fragments)
-        return messages
-    else:
-        summary = summarize_fragments(fragments, expand=expand)
-        return [summary]
+    msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list)
 
+    # Fragmentar missatges llargs > 4000 caràcters
+    final_msgs = []
+    for m in msgs:
+        if len(m) > 4000:
+            chunks = [m[i:i+3900] for i in range(0, len(m), 3900)]
+            final_msgs.extend(chunks)
+        else:
+            final_msgs.append(m)
+
+    # Guardar memòria temporal
+    try:
+        emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
+        if user_id:
+            ctx = user_context.setdefault(user_id, {})
+            ctx["last_topic"] = prompt
+            ctx["last_embedding"] = emb_topic
+            ctx["last_time"] = time.time()
+            ctx.setdefault("topics_covered", set()).update(topics)
+    except Exception:
+        pass
+
+    return final_msgs
+
+# --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hola, patxetí! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. Pregunta’m el que vulguis sobre Miravet, Rasquera, Tivissa, Ginestar i Benissanet. També pots provar amb curiositats de la zona"
@@ -271,8 +273,9 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for paraula in user_text.lower().split():
         user_text = user_text.replace(paraula, tradueix_patxeti(paraula))
 
-    messages = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
-    for msg in messages:
+    msgs = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
+
+    for msg in msgs:
         await update.message.reply_text(msg)
 
 # --- CONFIGURACIÓ BOT ---
