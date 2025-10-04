@@ -124,16 +124,20 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
 
     return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
-def summarize_fragments(fragments, expand=False, list_mode=False):
+def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10):
+    """
+    Resumeix fragments en llistes o text seguit.
+    - list_mode=True: crea llista numerada, màxim 10 elements, 150 caràcters per element, amb poble al final.
+    - expand=True: afegeix més info (summary) si està disponible.
+    """
     parts = []
-    seen_texts = set()
-    max_items = 10
 
-    for f in fragments:
-        text = f.get("long_summary","") or f.get("summary","")
-        if list_mode:
+    if list_mode:
+        for idx, f in enumerate(fragments[:max_items]):
+            text = f.get("long_summary","") or f.get("summary","")
             text = text.strip()
-            # tallar a punt o coma proper als 150 caràcters
+
+            # Tallar màxim 150 caràcters
             if len(text) > 150:
                 cutoff = text.find(".", 100)
                 if cutoff == -1 or cutoff > 150:
@@ -141,29 +145,21 @@ def summarize_fragments(fragments, expand=False, list_mode=False):
                     if cutoff == -1:
                         cutoff = 150
                 text = text[:cutoff+1].strip()
-            # afegir nom del poble
-            text = f"{text} ({f.get('population','')})"
-            # filtrar duplicats
-            if text not in seen_texts:
-                parts.append(text)
-                seen_texts.add(text)
-        else:
-            # text narratiu amb font
+
+            # Numeració i poble
+            text = f"{idx+1}. {text} ({f.get('population','')})"
+            parts.append(text)
+    else:
+        for f in fragments:
+            # Prioritzar long_summary
+            text = f.get("long_summary","") or f.get("summary","")
             base = text
             if expand and f.get("summary"):
-                base += f"\nDetalls: " + f.get("summary")
+                base += "\nDetalls: " + f.get("summary")
             text = f"{base}\nFont: F1 ({f.get('title','')})"
             parts.append(text)
 
-        if list_mode and len(parts) >= max_items:
-            break
-
-    # quan és llista, retornar un sol missatge amb els elements separats per línies
-    if list_mode:
-        return ["\n".join(parts)]
-    else:
-        return parts
-
+    return parts
 
 def log_tokens(user_id, tokens_used, cost):
     try:
