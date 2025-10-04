@@ -77,8 +77,7 @@ else:
 
 # --- CARREGAR HNSW FAISS ---
 d = embeddings.shape[1]
-index = faiss.IndexHNSWFlat(d)
-index.hnsw.M = 32
+index = faiss.IndexHNSWFlat(d, 32)
 index.hnsw.efConstruction = 100
 index.hnsw.efSearch = 100
 if embeddings.shape[0] > 0:
