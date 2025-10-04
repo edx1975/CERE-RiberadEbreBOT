@@ -18,7 +18,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
 openai.api_key = OPENAI_API_KEY
 
 SYSTEM_PROMPT = (
-    "Ets un bot expert en la Ribera d'Ebre (Ginestar, Benissanet, Tivissa, Rasquera, Miravet, i altres pobles). "
+    "Ets un bot expert en la Ribera d'Ebre (14 pobles). "
     "Respón amb estil patxetí, proper i directe, aportant dades històriques del corpus. "
     "Cada fet històric ha de portar la seva font citada (F1, F2…) amb títol resumit. "
     "Si l’usuari demana detalls, amplia la resposta amb més informació disponible, sinó respon breu."
@@ -37,6 +37,13 @@ with open(DICCIONARI_PATXETI_FILE, "r", encoding="utf-8") as f:
 TOP_K = 5
 CONTEXT_EXPIRY = 600  # 10 minuts
 user_context = {}  # memòria temporal
+
+# --- Llista completa de pobles de la Ribera ---
+POBLES_RIBERA = [
+    "Ginestar","Benissanet","Tivissa","Rasquera","Miravet",
+    "Móra d’Ebre","Flix","Ascó","La Palma d’Ebre","Batea",
+    "Corbera d’Ebre","La Fatarella","Cambrils","Vinebre"
+]
 
 # --- CARREGAR CORPUS ---
 corpus = []
@@ -95,30 +102,21 @@ def needs_expansion(user_query: str) -> bool:
     triggers = ["detall", "detalls", "explica", "explicació", "amplia", "llarg", "més informació", "aprofund"]
     return any(t in user_query.lower() for t in triggers)
 
-def tradueix_patxeti(paraula):
-    return DICCIONARI_PATXETI.get(paraula.lower(), paraula)
-
-def verify_location(user_input):
-    all_places = list({entry.get("population","").lower() for entry in corpus})
-    matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
-    return matches[0].capitalize() if matches else None
-
-def semantic_search(query, top_k=TOP_K, topics=None, population=None, last_embedding=None):
+def semantic_search(query, top_k=TOP_K, topics=None, population=None):
     try:
-        q_emb = np.array(openai.embeddings.create(input=query, model="text-embedding-3-small").data[0].embedding, dtype=np.float32).reshape(1, -1)
+        resp = openai.embeddings.create(input=query, model="text-embedding-3-small")
+        q_emb = np.array(resp.data[0].embedding, dtype=np.float32).reshape(1, -1)
     except Exception:
         return []
 
     D, I = index.search(q_emb, top_k*3)
     candidates = [corpus[i] for i in I[0]]
 
-    # Prioritzar fragments segons població
     if population:
         pop_fragments = [f for f in candidates if population.lower() in f.get("population","").lower()]
         other_fragments = [f for f in candidates if population.lower() not in f.get("population","").lower()]
         candidates = pop_fragments + other_fragments
 
-    # Filtrat per topics
     if topics:
         filtered = [
             f for f in candidates
@@ -131,68 +129,94 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None, last_embed
         ]
         candidates = filtered if filtered else candidates
 
-    # Prioritzar fragments més propers al context
-    if last_embedding is not None:
-        scores = []
-        for f in candidates:
-            f_emb = np.array(openai.embeddings.create(input=f.get("long_summary",""), model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
-            score = np.dot(last_embedding, f_emb)/(np.linalg.norm(last_embedding)*np.linalg.norm(f_emb))
-            scores.append(score)
-        candidates = [x for _,x in sorted(zip(scores,candidates), key=lambda pair: pair[0], reverse=True)]
-
     return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
-def summarize_fragments(fragments, expand=False, max_items=10, list_mode=False):
+def chunk_text(text, max_len=800):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_len
+        if end >= len(text):
+            chunks.append(text[start:].strip())
+            break
+        period_pos = text.rfind('.', start, end)
+        comma_pos = text.rfind(',', start, end)
+        if period_pos != -1:
+            end = period_pos + 1
+        elif comma_pos != -1:
+            end = comma_pos + 1
+        chunks.append(text[start:end].strip())
+        start = end
+    return chunks
+
+def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10):
     parts = []
+
     if list_mode:
         for idx, f in enumerate(fragments[:max_items]):
-            t = f.get("title","Desconegut")
-            s = f.get("long_summary","") or f.get("summary","")
-            s = s.strip().replace("\n"," ")
-            if len(s) > 200:  # màxim 3-4 línies
-                cutoff = s.find(".", 150)
-                if cutoff == -1 or cutoff > 200:
-                    cutoff = 200
-                s = s[:cutoff+1].strip()
-            parts.append(f"{idx+1}. {t}: {s}")
-        return ["\n".join(parts)]
+            title = f.get("title","")
+            text = f.get("long_summary","") or f.get("summary","")
+            text = text.strip().replace("\n"," ")
+            if len(text) > 300:
+                text = text[:300].rsplit('.', 1)[0] + '.'
+            parts.append(f"{idx+1}. {title}: {text}")
+        full_text = "\n".join(parts)
+        return chunk_text(full_text, max_len=800)
+
     else:
         for f in fragments:
             text = f.get("long_summary","") or f.get("summary","")
             if expand and f.get("summary"):
-                text += "\nDetalls: " + f.get("summary")
-            text = text.strip().replace("\n"," ")
-            parts.append(f"{text}\nFont: F1 ({f.get('title','')})")
-        return [" ".join(parts)]
+                text += "\nDetalls: " + f.get("summary","")
+            text += f"\nFont: F1 ({f.get('title','')})"
+            parts.append(text.strip())
 
+        full_text = "\n\n".join(parts)
+        max_len = 1200 if expand else 800
+        return chunk_text(full_text, max_len=max_len)
+
+def log_tokens(user_id, tokens_used, cost):
+    try:
+        if os.path.exists(TOKEN_LOG_FILE):
+            with open(TOKEN_LOG_FILE, "r", encoding="utf-8") as f:
+                log = json.load(f)
+        else:
+            log = {}
+        if str(user_id) not in log:
+            log[str(user_id)] = {"tokens":0, "euros":0.0}
+        log[str(user_id)]["tokens"] += tokens_used
+        log[str(user_id)]["euros"] += cost
+        with open(TOKEN_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(log, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def tradueix_patxeti(paraula):
+    return DICCIONARI_PATXETI.get(paraula.lower(), paraula)
+
+def verify_location(user_input):
+    all_places = list({entry.get("population","").lower() for entry in corpus})
+    matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
+    return matches[0].capitalize() if matches else None
+
+# --- FUNCIO PRINCIPAL ---
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
-    # Traducció patxetí
-    for word in prompt.lower().split():
-        prompt = prompt.replace(word, tradueix_patxeti(word))
-
-    # Determinar població
     correct_loc = verify_location(prompt)
     if correct_loc and (not population or correct_loc.lower() != population.lower()):
         population = correct_loc
 
-    last_embedding = None
-    if user_id and user_id in user_context:
-        ctx = user_context[user_id]
-        last_embedding = ctx.get("last_embedding", None)
-        if not population:
-            last_topic = ctx.get("last_topic","")
-            for poble in [e.get("population","") for e in corpus]:
-                if poble.lower() in last_topic.lower():
-                    population = poble
-                    break
+    if not population and user_id and user_id in user_context:
+        last_topic = user_context[user_id].get("last_topic","")
+        for poble in POBLES_RIBERA:
+            if poble.lower() in last_topic.lower():
+                population = poble
+                break
 
-    # Determinar si és llista
     list_keywords = ["llistat", "llista", "coses", "histories", "curiositats", "plants", "menjars", "fetes"]
     is_list = any(k in prompt.lower() for k in list_keywords)
 
-    # Extreure temes
     try:
         resp_topics = openai.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -207,9 +231,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
         covered = user_context[user_id].get("topics_covered", set())
         topics = [t for t in topics if t not in covered]
 
-    # Cerca semàntica
-    fragments = semantic_search(prompt, topics=topics, population=population, last_embedding=last_embedding)
-
+    fragments = semantic_search(prompt, topics=topics, population=population)
     if not fragments:
         if strict_corpus:
             return ["Escolta’m, però no tinc informació concreta al corpus sobre això."]
@@ -229,7 +251,6 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     expand = needs_expansion(prompt)
     msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list)
 
-    # Actualitzar context
     try:
         emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
         if user_id:
@@ -247,7 +268,8 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hola, patxetí! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. "
-        "Pregunta’m el que vulguis sobre els pobles, paisatges i històries locals."
+        "Pregunta’m el que vulguis sobre els 14 pobles. "
+        "També pots provar amb curiositats de la zona."
     )
 
 async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -260,14 +282,13 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
 
+    for paraula in user_text.lower().split():
+        user_text = user_text.replace(paraula, tradueix_patxeti(paraula))
+
     msgs = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
 
     for msg in msgs:
-        # Fragmentar si el missatge supera 4000 caràcters
-        chunk_size = 3900
-        for i in range(0, len(msg), chunk_size):
-            await update.message.reply_text(msg[i:i+chunk_size])
-
+        await update.message.reply_text(msg)
 
 # --- CONFIGURACIÓ BOT ---
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
