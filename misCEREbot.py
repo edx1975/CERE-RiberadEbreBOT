@@ -65,9 +65,29 @@ with open(CORPUS_FILE, "r", encoding="utf-8") as f:
             corpus_texts.append(" ".join([entry.get("title", ""), entry.get("summary", ""), entry.get("long_summary", "")]))
         except json.JSONDecodeError:
             print(f"⚠️ Línia descartada al corpus: {line[:120]}")
+# --- Stopwords en català per TF-IDF ---
+catalan_stopwords = [
+    "a", "abans", "acabar", "això", "al", "algun", "alguna", "algunes", "alguns",
+    "allà", "allí", "allò", "als", "altra", "altre", "altres", "amb", "aprop",
+    "aquí", "baix", "bé", "cada", "cap", "casa", "com", "con", "contra",
+    "d", "da", "dalt", "davant", "de", "del", "dels", "des", "després",
+    "dins", "doncs", "durant", "el", "els", "ella", "elles", "ells",
+    "em", "encara", "en", "ens", "entre", "era", "eren", "és", "esta",
+    "està", "estaven", "etc", "ets", "fins", "fora", "gairebé", "hi",
+    "igual", "jo", "la", "les", "li", "lo", "los", "m", "ma", "mai",
+    "massa", "mateix", "me", "mentre", "més", "molt", "molta", "moltes",
+    "moltíssim", "moltíssimes", "moltíssims", "molts", "nosaltres", "o",
+    "on", "pel", "pels", "per", "perquè", "però", "poc", "poca", "poques",
+    "pocs", "podem", "pot", "quan", "quant", "que", "qui", "quin",
+    "quina", "quines", "quins", "s", "se", "segons", "sense", "ser",
+    "ses", "si", "sobre", "sol", "solament", "sols", "som", "sou", "són",
+    "també", "tan", "tant", "tanta", "tantes", "tants", "te", "tenim",
+    "tenir", "tot", "tota", "totes", "tots", "un", "una", "unes", "uns",
+    "va", "vam", "van", "vosaltres"
+]
 
 # --- TF-IDF (només per booster de coincidències textuals) ---
-vectorizer = TfidfVectorizer(max_features=5000, stop_words='spanish')
+vectorizer = TfidfVectorizer(max_features=5000, stop_words=catalan_stopwords)
 if corpus_texts:
     tfidf_matrix = vectorizer.fit_transform(corpus_texts)
 else:
