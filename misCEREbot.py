@@ -1,25 +1,26 @@
-# bot_ribera_conversacional.py
 import os
 import json
-import time
 import asyncio
-import threading
-from http.server import SimpleHTTPRequestHandler, HTTPServer
-
+import time
 import numpy as np
 import faiss
-from dotenv import load_dotenv
-import openai
-
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+import openai
+from dotenv import load_dotenv
+from sklearn.metrics.pairwise import cosine_similarity
 
 load_dotenv()
 
 # --- CONFIGURACIÓ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
 openai.api_key = OPENAI_API_KEY
+
+SYSTEM_PROMPT = (
+    "Ets un bot expert en la Ribera d'Ebre (Ginestar, Benissanet, Tivissa, Rasquera i Miravet). "
+    "Respón amb estil patxetí, proper, amable i simpàtic, com parlaria un veí de la zona. "
+)
 
 DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus.jsonl")
@@ -27,68 +28,56 @@ EMBEDDINGS_FILE = os.path.join(DATA_DIR, "embeddings.npy")
 TOKEN_LOG_FILE = os.path.join(DATA_DIR, "token_log.json")
 
 TOP_K = 5
-CONTEXT_EXPIRY = 5 * 60
-EMBED_MODEL = "text-embedding-3-small"
-LLM_MODEL = "gpt-3.5-turbo"
-MAX_RESPONSE_TOKENS = 450
-TEMPERATURE = 0.5  # una mica creatiu i simpàtic
+CONTEXT_EXPIRY = 600  # 10 minuts
 
-SYSTEM_PROMPT = (
-    "Ets un bot expert en la Ribera d'Ebre: Ginestar, Benissanet, Tivissa, Rasquera i Miravet. "
-    "RESPON amb gràcia, curiositats i exemples divertits sempre que sigui possible, "
-    "però només basant-te en la informació dels fragments proporcionats. "
-    "Si no tens informació, RESPON exactament: \"No tinc informació al corpus sobre això.\""
-)
-
-# --- MEMÒRIA ---
-user_context = {}  # user_id -> {"last_time", "last_query", "topics_covered": set()}
+# --- MEMÒRIA TEMPORAL ---
+user_context = {}  # user_id -> {"last_topic": str, "last_embedding": np.array, "last_time": timestamp, "topics_covered": set()}
 
 # --- CARREGAR CORPUS ---
 corpus = []
-corpus_texts = []
 with open(CORPUS_FILE, "r", encoding="utf-8") as f:
-    for i, line in enumerate(f):
+    for line in f:
         line = line.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-            entry.setdefault("title", f"fragment_{i}")
-            entry.setdefault("summary", "")
-            entry.setdefault("long_summary", "")
-            entry.setdefault("population", "")
-            entry.setdefault("id", str(i))
             corpus.append(entry)
-            corpus_texts.append(" ".join([entry.get("title", ""), entry.get("summary", ""), entry.get("long_summary", "")]))
         except json.JSONDecodeError:
-            print(f"⚠️ Línia descartada al corpus: {line[:120]}")
+            print(f"⚠️ Línia descartada: {line}")
 
 # --- CARREGAR / CREAR EMBEDDINGS ---
 if os.path.exists(EMBEDDINGS_FILE):
     embeddings = np.load(EMBEDDINGS_FILE)
+    print(f"✅ Carregats {embeddings.shape[0]} embeddings existents.")
 else:
     embeddings = np.zeros((0, 1536), dtype=np.float32)
 
-if embeddings.shape[0] != len(corpus):
-    print("ℹ️ Generant embeddings per al corpus...")
-    new_embs = []
-    for entry in corpus:
-        text = " ".join([entry.get("title",""), entry.get("summary",""), entry.get("long_summary","")])
-        try:
-            resp = openai.embeddings.create(input=text, model=EMBED_MODEL)
-            emb = np.array(resp.data[0].embedding, dtype=np.float32)
-            norm = np.linalg.norm(emb)
-            if norm > 0:
-                emb = emb / norm
-            new_embs.append(emb)
-        except Exception:
-            new_embs.append(np.zeros((1536,), dtype=np.float32))
-    embeddings = np.vstack(new_embs).astype(np.float32)
-    np.save(EMBEDDINGS_FILE, embeddings)
+existing_count = embeddings.shape[0]
+new_docs = corpus[existing_count:]
 
-# --- FAISS INDEX ---
+if new_docs:
+    new_embeddings = []
+    for entry in new_docs:
+        text = " ".join([
+            entry.get("title",""),
+            entry.get("summary",""),
+            entry.get("long_summary",""),
+            " ".join(entry.get("topics", []))
+        ])
+        try:
+            resp = openai.embeddings.create(input=text, model="text-embedding-3-small")
+            new_embeddings.append(np.array(resp.data[0].embedding, dtype=np.float32))
+        except Exception:
+            new_embeddings.append(np.zeros((1536,), dtype=np.float32))
+    if new_embeddings:
+        embeddings = np.vstack([embeddings, np.array(new_embeddings, dtype=np.float32)])
+        np.save(EMBEDDINGS_FILE, embeddings)
+        print(f"✅ Embeddings nous guardats. Total embeddings: {embeddings.shape[0]}")
+
+# --- CREAR FAISS INDEX ---
 d = embeddings.shape[1]
-index = faiss.IndexFlatIP(d)
+index = faiss.IndexFlatL2(d)
 index.add(embeddings)
 
 # --- FUNCIONS AUXILIARS ---
@@ -98,94 +87,47 @@ def clean_expired_context():
     for uid in expired:
         del user_context[uid]
 
-def needs_expansion(text: str):
-    triggers = ["detall", "detalls", "explica", "aprofund", "més informació", "explica'm", "amplia"]
-    t = text.lower()
-    return any(x in t for x in triggers)
+def needs_expansion(user_query: str) -> bool:
+    triggers = ["detall", "detalls", "explica", "explicació", "amplia", "llarg", "més informació", "aprofund"]
+    return any(t in user_query.lower() for t in triggers)
 
-def extract_topics(prompt: str):
+def semantic_search(query, top_k=TOP_K, topics=None, population=None):
     try:
-        resp = openai.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[{"role": "user", "content": f"Extreu fins a 5 temes o paraules-clau separades per coma d'aquest text:\n{prompt}"}],
-            temperature=0,
-            max_tokens=60
-        )
-        raw = resp.choices[0].message.content
-        topics = [t.strip() for t in raw.replace("\n", ",").split(",") if t.strip()][:5]
-        return topics
+        resp = openai.embeddings.create(input=query, model="text-embedding-3-small")
+        q_emb = np.array(resp.data[0].embedding, dtype=np.float32).reshape(1, -1)
     except Exception:
         return []
 
-def semantic_search(query: str, top_k=TOP_K, population: str = None, topics: list = None):
-    try:
-        qemb = np.array(openai.embeddings.create(input=query, model=EMBED_MODEL).data[0].embedding, dtype=np.float32)
-        norm = np.linalg.norm(qemb)
-        if norm > 0:
-            qemb = qemb / norm
-    except Exception:
-        return []
+    D, I = index.search(q_emb, top_k*3)
+    candidates = [corpus[i] for i in I[0]]
 
-    qemb = qemb.reshape(1, -1)
-    D, I = index.search(qemb, top_k * 6)
-    candidate_indices = [int(i) for i in I[0] if i != -1]
+    if population:
+        pop_fragments = [f for f in candidates if population.lower() in f.get("population","").lower()]
+        other_fragments = [f for f in candidates if population.lower() not in f.get("population","").lower()]
+        candidates = pop_fragments + other_fragments
 
-    results = []
-    for idx in candidate_indices:
-        frag = corpus[idx]
-        score = float(D[0][candidate_indices.index(idx)])
-        if population and population.lower() in frag.get("population", "").lower():
-            score += 0.3
-        if topics:
-            text = " ".join([frag.get("title",""), frag.get("summary",""), frag.get("long_summary","")]).lower()
-            for t in topics:
-                if t.lower() in text:
-                    score += 0.1
-        results.append((score, frag))
-    results.sort(key=lambda x: x[0], reverse=True)
+    if topics:
+        filtered = [
+            f for f in candidates
+            if any(
+                t.lower() in f.get("summary","").lower() or
+                t.lower() in f.get("long_summary","").lower() or
+                t.lower() in [x.lower() for x in f.get("topics",[])]
+                for t in topics
+            )
+        ]
+        candidates = filtered if filtered else candidates
 
-    seen = set()
-    unique_results = []
-    for sc, fr in results:
-        if fr.get("id") in seen:
-            continue
-        seen.add(fr.get("id"))
-        unique_results.append((sc, fr))
-        if len(unique_results) >= top_k:
-            break
-    unique_results = [(s,f) for (s,f) in unique_results if f.get("summary") or f.get("long_summary")]
-    return unique_results[:top_k]
+    return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
-def format_fragments_for_prompt(frags):
+def summarize_fragments(fragments, expand=False):
     parts = []
-    for score, f in frags:
-        parts.append({
-            "id": f.get("id"),
-            "title": f.get("title"),
-            "summary": f.get("summary")[:800],
-            "long_summary": (f.get("long_summary") or "")[:1200],
-            "population": f.get("population",""),
-            "score": round(float(score), 4)
-        })
-    return parts
-
-def build_user_prompt(question: str, fragments_for_prompt: list, expand=False):
-    fragments_text = ""
-    for i, f in enumerate(fragments_for_prompt, start=1):
-        fragments_text += f"F{i}. Títol: {f['title']} (id: {f['id']})\nResum: {f['summary']}\n\n"
-
-    instruction = (
-        "INSTRUCCIONS:\n"
-        "- RESPON UTILITZANT NOMÉS la informació dels fragments F1..Fn.\n"
-        "- Sigues simpàtic, curiós i didàctic.\n"
-        "- Si no pots respondre amb aquests fragments, RESPON exactament: \"No tinc informació al corpus sobre això.\"\n"
-        "- Dona una resposta breu (3-8 línies) i al final llista les fonts F{i} (Títol).\n\n"
-    )
-    if expand:
-        instruction += "- L'usuari vol més detalls; si hi ha 'long_summary', afegeix 1-2 frases addicionals.\n\n"
-
-    prompt = f"{SYSTEM_PROMPT}\n\n{instruction}\nFRAGMENTS:\n{fragments_text}\nPREGUNTA DE L'USUARI: {question}\nRESPON:"
-    return prompt
+    for f in fragments:
+        base = f"📌 {f.get('title','')}\n{f.get('summary','')}"
+        if expand and f.get("long_summary"):
+            base += f"\n🔎 Detalls: {f.get('long_summary')}"
+        parts.append(base)
+    return "\n\n".join(parts)
 
 def log_tokens(user_id, tokens_used, cost):
     try:
@@ -195,7 +137,7 @@ def log_tokens(user_id, tokens_used, cost):
         else:
             log = {}
         if str(user_id) not in log:
-            log[str(user_id)] = {"tokens": 0, "euros": 0.0}
+            log[str(user_id)] = {"tokens":0, "euros":0.0}
         log[str(user_id)]["tokens"] += tokens_used
         log[str(user_id)]["euros"] += cost
         with open(TOKEN_LOG_FILE, "w", encoding="utf-8") as f:
@@ -204,82 +146,111 @@ def log_tokens(user_id, tokens_used, cost):
         pass
 
 # --- FUNCIO PRINCIPAL ---
-def ask_openai(question: str, user_id=None, population=None):
+def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
-    topics = extract_topics(question)
-    frags = semantic_search(question, top_k=TOP_K, population=population, topics=topics)
-    if not frags:
-        return "No tinc informació al corpus sobre això."
 
-    fragments_for_prompt = format_fragments_for_prompt(frags)
-    expand = needs_expansion(question)
-    user_prompt = build_user_prompt(question, fragments_for_prompt, expand=expand)
+    # deduir població si no s'indica
+    if not population and user_id and user_id in user_context:
+        last_topic = user_context[user_id].get("last_topic","")
+        for poble in ["Ginestar","Benissanet","Tivissa","Rasquera","Miravet"]:
+            if poble.lower() in last_topic.lower():
+                population = poble
+                break
+
+    # extreure topics aproximats
+    try:
+        resp_topics = openai.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role":"user","content":f"Extreu fins a 5 temes principals d'aquest text per fer cerca semàntica, separats per comes:\n{prompt}"}],
+            temperature=0
+        )
+        topics = [t.strip() for t in resp_topics.choices[0].message.content.split(",") if t.strip()][:5]
+    except Exception:
+        topics = []
+
+    # filtrar topics ja coberts
+    if user_id and user_id in user_context:
+        covered = user_context[user_id].get("topics_covered", set())
+        topics = [t for t in topics if t not in covered]
+
+    # recerca semàntica
+    fragments = semantic_search(prompt, topics=topics, population=population)
+    if not fragments:
+        if strict_corpus:
+            return "⚠️ Escolta’m, però no tinc informació concreta al corpus sobre això, pardal!"
+        try:
+            resp = openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role":"system","content":SYSTEM_PROMPT},
+                    {"role":"user","content":prompt}
+                ],
+                max_tokens=500
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            return f"⚠️ Error amb OpenAI: {e}"
+
+    expand = needs_expansion(prompt)
+    summary = summarize_fragments(fragments, expand=expand)
+
+    # actualitzar memòria
+    try:
+        emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
+        if user_id:
+            ctx = user_context.setdefault(user_id, {})
+            ctx["last_topic"] = prompt
+            ctx["last_embedding"] = emb_topic
+            ctx["last_time"] = time.time()
+            ctx.setdefault("topics_covered", set()).update(topics)
+    except Exception:
+        pass
+
+    user_prompt = f"Escolta’m, aquí tens el resum del corpus, patxetí:\n\n{summary}\n\nPregunta: {prompt}"
 
     try:
         resp = openai.chat.completions.create(
-            model=LLM_MODEL,
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
+                {"role":"system","content":SYSTEM_PROMPT},
+                {"role":"user","content":user_prompt}
             ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_RESPONSE_TOKENS
+            max_tokens=600
         )
+        usage = getattr(resp, "usage", None)
+        if usage and user_id:
+            cost = (usage.total_tokens / 1000) * 0.001
+            log_tokens(user_id, usage.total_tokens, cost)
         text = resp.choices[0].message.content.strip()
-        if user_id:
-            user_context[user_id] = {
-                "last_time": time.time(),
-                "topics_covered": set(topics),
-                "last_query": question
-            }
         return text
     except Exception as e:
-        return f"Error amb OpenAI: {e}"
+        return f"⚠️ Error amb OpenAI: {e}"
 
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Hola! Sóc el bot de la Ribera d'Ebre. Pregunta'm coses curioses o històriques i t'ho explicaré amb gràcia! /forget per esborrar memòria."
+        "🤖 Hola, patxetí! Sóc el teu bot de la Ribera d’Ebre. Pregunta’m el que vulguis sobre la zona!"
     )
 
 async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    user_context.pop(user_id, None)
-    await update.message.reply_text("🗑️ Memòria d'usuari esborrada.")
+    if user_id in user_context:
+        del user_context[user_id]
+    await update.message.reply_text("🗑️ Memòria d’usuari esborrada, pardal!")
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
-    if user_text.strip().lower() in ["/forget", "esborra memòria", "esborra"]:
-        user_context.pop(user_id, None)
-        await update.message.reply_text("🗑️ Memòria eliminada.")
-        return
-    resp = await asyncio.to_thread(ask_openai, user_text, user_id)
+    resp = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
     await update.message.reply_text(resp)
 
-# --- HEALTHCHECK SERVER ---
-def run_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    class HealthHandler(SimpleHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == "/":
-                self.send_response(200)
-                self.send_header("Content-type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"OK")
-            else:
-                self.send_error(404, "Not Found")
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
-
-threading.Thread(target=run_health_server, daemon=True).start()
-
-# --- CONFIGURACIÓ BOT TELEGRAM ---
+# --- CONFIGURACIÓ BOT ---
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("forget", forget_cmd))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
 
+# --- INICI BOT ---
 if __name__ == "__main__":
-    print("🤖 Bot conversacional de la Ribera d'Ebre en execució!")
+    print("🤖 Bot patxetí amb memòria temporal i corpus actiu en execució...")
     app.run_polling()
