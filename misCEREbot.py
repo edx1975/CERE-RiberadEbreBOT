@@ -20,10 +20,10 @@ SYSTEM_PROMPT = (
     "Ets un bot expert en la Ribera d'Ebre (Ginestar, Benissanet, Tivissa, Rasquera i Miravet). "
     "Respón amb estil patxetí, proper i directe, aportant dades històriques del corpus. "
     "Cada fet històric ha de portar la seva font citada (F1, F2…) amb títol resumit. "
-    "Si l’usuari demana detalls, amplia la resposta amb més informació disponible, sinó respon breu. "
-    "Incorpora algunes paraules del diccionari patxetí de manera natural dins del text."
+    "Si l’usuari demana detalls, amplia la resposta amb més informació disponible, sinó respon breu."
 )
 
+# --- DIRECTORIS I ARXIUS ---
 DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus.jsonl")
 EMBEDDINGS_FILE = os.path.join(DATA_DIR, "embeddings.npy")
@@ -108,11 +108,11 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
     D, I = index.search(q_emb, top_k*3)
     candidates = [corpus[i] for i in I[0]]
 
+    # Filtrar per població si és passada
     if population:
-        pop_fragments = [f for f in candidates if population.lower() in f.get("population","").lower()]
-        other_fragments = [f for f in candidates if population.lower() not in f.get("population","").lower()]
-        candidates = pop_fragments + other_fragments
+        candidates = [f for f in candidates if f.get("population","").lower() == population.lower()]
 
+    # Filtrar per topics si hi ha
     if topics:
         filtered = [
             f for f in candidates
@@ -156,6 +156,14 @@ def log_tokens(user_id, tokens_used, cost):
     except Exception:
         pass
 
+def inject_patxeti(text):
+    words = text.split()
+    for i, w in enumerate(words):
+        lw = w.lower().strip(",.!?")
+        if lw in DICCIONARI_PATXETI:
+            words[i] = f"{DICCIONARI_PATXETI[lw]}"
+    return " ".join(words)
+
 # --- FUNCIO PRINCIPAL ---
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
@@ -167,6 +175,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 population = poble
                 break
 
+    # Extreure temes
     try:
         resp_topics = openai.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -194,7 +203,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 ],
                 max_tokens=500
             )
-            return resp.choices[0].message.content.strip()
+            return inject_patxeti(resp.choices[0].message.content.strip())
         except Exception as e:
             return f"Error amb OpenAI: {e}"
 
@@ -212,7 +221,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     except Exception:
         pass
 
-    user_prompt = f"Aquí tens la informació trobada al corpus:\n\n{summary}\n\nPregunta: {prompt}"
+    user_prompt = f"Aquí tens la informació trobada al corpus sobre {population if population else 'la zona'}:\n\n{summary}\n\nPregunta: {prompt}"
 
     try:
         resp = openai.chat.completions.create(
@@ -227,7 +236,7 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
         if usage and user_id:
             cost = (usage.total_tokens / 1000) * 0.001
             log_tokens(user_id, usage.total_tokens, cost)
-        return resp.choices[0].message.content.strip()
+        return inject_patxeti(resp.choices[0].message.content.strip())
     except Exception as e:
         return f"Error amb OpenAI: {e}"
 
@@ -246,10 +255,10 @@ async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
+
     # Consulta al corpus / OpenAI
     resp = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
     await update.message.reply_text(resp)
-
 
 # --- CONFIGURACIÓ BOT ---
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
