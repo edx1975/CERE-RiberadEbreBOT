@@ -25,7 +25,7 @@ SYSTEM_PROMPT = (
     "Respón amablement i també com ChatGPT."
 )
 
-DATA_DIR = "../data"
+DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus.jsonl")
 EMBEDDINGS_FILE = os.path.join(DATA_DIR, "embeddings.npy")
 FAISS_INDEX_FILE = os.path.join(DATA_DIR, "faiss.index")
