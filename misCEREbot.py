@@ -129,40 +129,45 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
         ]
         candidates = filtered if filtered else candidates
 
-    return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
+    return [f for f in candidates if isinstance(f, dict) and (f.get("summary") or f.get("long_summary"))][:top_k]
 
-def tradueix_patxeti(paraula):
-    return DICCIONARI_PATXETI.get(paraula.lower(), paraula)
-
-def verify_location(user_input):
-    all_places = list({entry.get("population","").lower() for entry in corpus})
-    matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
-    return matches[0].capitalize() if matches else None
+def chunk_text(text, max_len=800):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_len
+        if end >= len(text):
+            chunks.append(text[start:].strip())
+            break
+        period_pos = text.rfind('.', start, end)
+        comma_pos = text.rfind(',', start, end)
+        if period_pos != -1:
+            end = period_pos + 1
+        elif comma_pos != -1:
+            end = comma_pos + 1
+        chunks.append(text[start:end].strip())
+        start = end
+    return chunks
 
 def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10, max_chars=1200):
+    """
+    Genera un únic missatge coherent a partir de fragments.
+    """
     if not fragments:
         return ["Escolta’m, però no tinc informació concreta sobre això."]
     
     parts = []
-
-    if isinstance(fragments[0], str):
-        # fragments ja són textos generats
-        message = " ".join(fragments)
-        if len(message) > max_chars:
-            message = message[:max_chars].rsplit(".",1)[0] + "."
-        return [message]
-
+    
     if list_mode:
+        # 10 ítems amb títol i 2-3 línies
         for f in fragments[:max_items]:
             title = f.get("title","Sense títol")
             text = f.get("long_summary","") or f.get("summary","")
             text = text.replace("\n"," ").strip()
-            if len(text) > 200:
-                text = text[:200].rsplit(".",1)[0] + "."
-            parts.append(f"{title}: {text}")
-        message = "\n".join(parts)
+            parts.append(f"{title}: {text[:300].strip()}")
+        message = "\n\n".join(parts)
     else:
-        intro = ""  # Ara no afegim cap frase fixa
+        # Fragments en text conversacional
         for f in fragments:
             text = f.get("long_summary","") or f.get("summary","")
             if expand and f.get("summary"):
@@ -172,11 +177,19 @@ def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10, 
         body = " ".join(parts)
         if len(body) > max_chars:
             body = body[:max_chars].rsplit(".",1)[0] + "."
-        message = f"{body}\nFont: F1 ({fragments[0].get('title','')})"
-
+        message = body + f"\nFont: F1 ({fragments[0].get('title','')})"
+    
     return [message]
 
+def tradueix_patxeti(paraula):
+    return DICCIONARI_PATXETI.get(paraula.lower(), paraula)
 
+def verify_location(user_input):
+    all_places = list({entry.get("population","").lower() for entry in corpus if isinstance(entry, dict)})
+    matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
+    return matches[0].capitalize() if matches else None
+
+# --- FUNCIO PRINCIPAL ---
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
@@ -209,9 +222,10 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
         topics = [t for t in topics if t not in covered]
 
     fragments = semantic_search(prompt, topics=topics, population=population)
+
     if not fragments:
         if strict_corpus:
-            return ["Escolta’m, però no tinc informació concreta al corpus sobre això."]
+            return [{"long_summary": "Escolta’m, però no tinc informació concreta al corpus sobre això.", "title": ""}]
         try:
             resp = openai.chat.completions.create(
                 model="gpt-4o-mini",
@@ -221,12 +235,11 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 ],
                 max_tokens=500
             )
-            return [resp.choices[0].message.content.strip()]
+            return [{"long_summary": resp.choices[0].message.content.strip(), "title": ""}]
         except Exception as e:
-            return [f"Error amb OpenAI: {e}"]
+            return [{"long_summary": f"Error amb OpenAI: {e}", "title": ""}]
 
     expand = needs_expansion(prompt)
-    msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list)
 
     try:
         emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
@@ -239,13 +252,14 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     except Exception:
         pass
 
-    return msgs
+    return fragments, expand, is_list
 
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hola, patxetí! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. "
-        "Pregunta’m el que vulguis sobre els 14 pobles. També pots provar amb curiositats de la zona."
+        "Pregunta’m el que vulguis sobre els 14 pobles. "
+        "També pots provar amb curiositats de la zona."
     )
 
 async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -258,15 +272,13 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
 
+    # Traducció patxetí
     for paraula in user_text.lower().split():
         user_text = user_text.replace(paraula, tradueix_patxeti(paraula))
 
-    list_keywords = ["llistat", "llista", "coses", "histories", "curiositats", "plants", "menjars", "fetes"]
-    is_list = any(k in user_text.lower() for k in list_keywords)
-    expand = needs_expansion(user_text)
-
-    fragments = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
+    fragments, expand, is_list = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
     msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list)
+
     await update.message.reply_text(msgs[0])
 
 # --- CONFIGURACIÓ BOT ---
