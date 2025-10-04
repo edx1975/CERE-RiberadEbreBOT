@@ -95,6 +95,24 @@ def needs_expansion(user_query: str) -> bool:
     triggers = ["detall", "detalls", "explica", "explicació", "amplia", "llarg", "més informació", "aprofund"]
     return any(t in user_query.lower() for t in triggers)
 
+def resume_text(text: str, max_chars: int = 800) -> str:
+    """
+    Retorna un resum del text limitat a max_chars caràcters,
+    intentant tallar al final d'una frase (punt, interrogant o exclamació).
+    """
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+
+    truncated = text[:max_chars]
+    end = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"))
+    if end == -1 or end < max_chars * 0.5:
+        end = truncated.rfind(",")
+    if end == -1:
+        end = max_chars
+
+    return truncated[:end+1].strip()
+
 def semantic_search(query, top_k=TOP_K, topics=None, population=None):
     try:
         resp = openai.embeddings.create(input=query, model="text-embedding-3-small")
@@ -124,40 +142,37 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
 
     return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
-def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10):
-    """
-    Resumeix fragments en llistes o text seguit.
-    - list_mode=True: crea llista numerada, màxim 10 elements, 150 caràcters per element, amb poble al final.
-    - expand=True: afegeix més info (summary) si està disponible.
-    """
+def summarize_fragments(fragments, expand=False, list_mode=False, max_items=10, user_id=None):
     parts = []
 
     if list_mode:
         for idx, f in enumerate(fragments[:max_items]):
-            text = f.get("long_summary","") or f.get("summary","")
-            text = text.strip()
+            text = f.get("summary","") or f.get("long_summary","")
+            text = resume_text(text, max_chars=150)
+            parts.append(f"{idx+1}. {text} ({f.get('population','')})")
+        return ["\n".join(parts)]
 
-            # Tallar màxim 150 caràcters
-            if len(text) > 150:
-                cutoff = text.find(".", 100)
-                if cutoff == -1 or cutoff > 150:
-                    cutoff = text.find(",", 140)
-                    if cutoff == -1:
-                        cutoff = 150
-                text = text[:cutoff+1].strip()
+    for f in fragments:
+        combined = f.get("long_summary","") + " " + f.get("summary","")
+        combined = combined.strip()
 
-            # Numeració i poble
-            text = f"{idx+1}. {text} ({f.get('population','')})"
-            parts.append(text)
-    else:
-        for f in fragments:
-            # Prioritzar long_summary
-            text = f.get("long_summary","") or f.get("summary","")
-            base = text
-            if expand and f.get("summary"):
-                base += "\nDetalls: " + f.get("summary")
-            text = f"{base}\nFont: F1 ({f.get('title','')})"
-            parts.append(text)
+        if expand and user_id:
+            # Obtenir l'índex de fragment per l'usuari i fragment actual
+            ctx = user_context.setdefault(user_id, {})
+            last_idx = ctx.get("fragment_idx", {}).get(f.get("title"), 0)
+
+            # Tallar el text segons el que ja s'ha mostrat
+            text_to_send = combined[last_idx:last_idx+800]
+            ctx.setdefault("fragment_idx", {})[f.get("title")] = last_idx + len(text_to_send)
+
+            # Afegir advertència si queda més text
+            if ctx["fragment_idx"][f.get("title")] < len(combined):
+                text_to_send += "\n[...] Més informació disponible si demanes."
+        else:
+            text_to_send = resume_text(f.get("long_summary",""), max_chars=800)
+
+        text_to_send = f"{text_to_send}\nFont: F1 ({f.get('title','')})"
+        parts.append(text_to_send)
 
     return parts
 
@@ -178,13 +193,9 @@ def log_tokens(user_id, tokens_used, cost):
         pass
 
 def tradueix_patxeti(paraula):
-    p = paraula.lower()
-    return DICCIONARI_PATXETI.get(p, paraula)
+    return DICCIONARI_PATXETI.get(paraula.lower(), paraula)
 
 def verify_location(user_input):
-    """
-    Retorna el nom correcte d'un lloc si l'usuari s'ha equivocat.
-    """
     all_places = list({entry.get("population","").lower() for entry in corpus})
     matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
     return matches[0].capitalize() if matches else None
@@ -193,7 +204,6 @@ def verify_location(user_input):
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
 
-    # Verificar noms de lloc sense mostrar missatge "Ah voldràs dir"
     correct_loc = verify_location(prompt)
     if correct_loc and (not population or correct_loc.lower() != population.lower()):
         population = correct_loc
@@ -205,7 +215,6 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
                 population = poble
                 break
 
-    # Determinar si és llista o tema concret
     list_keywords = ["llistat", "llista", "coses", "histories", "curiositats", "plants", "menjars", "fetes"]
     is_list = any(k in prompt.lower() for k in list_keywords)
 
@@ -241,11 +250,8 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
             return [f"Error amb OpenAI: {e}"]
 
     expand = needs_expansion(prompt)
-    
-    # cridar summarize_fragments amb list_mode segons keywords
     msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list)
 
-    # Fragmentar missatges molt llargs (>4000 caràcters) en blocs de 3900
     final_msgs = []
     for m in msgs:
         if len(m) > 4000:
@@ -254,7 +260,6 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
         else:
             final_msgs.append(m)
 
-    # Guardar memòria temporal
     try:
         emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
         if user_id:
@@ -271,7 +276,9 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Hola, patxetí! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. Pregunta’m el que vulguis sobre Miravet, Rasquera, Tivissa, Ginestar i Benissanet. També pots provar amb curiositats de la zona"
+        "Hola, patxetí! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. "
+        "Pregunta’m el que vulguis sobre Miravet, Rasquera, Tivissa, Ginestar i Benissanet. "
+        "També pots provar amb curiositats de la zona"
     )
 
 async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,7 +291,6 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
 
-    # Traducció patxetí dins el text
     for paraula in user_text.lower().split():
         user_text = user_text.replace(paraula, tradueix_patxeti(paraula))
 
