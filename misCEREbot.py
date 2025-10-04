@@ -22,10 +22,13 @@ SYSTEM_PROMPT = (
     "Cada fet històric ha de portar la seva font citada (F1, F2…) amb títol resumit. "
     "Si l’usuari demana detalls, amplia la resposta amb més informació disponible, sinó respon breu."
 )
+# --- CARREGAR DICCIONARI PATXETÍ ---
+DICCIONARI_PATXETI_FILE = os.path.join(DATA_DIR, "diccionari_patxeti.json")
+with open(DICCIONARI_PATXETI_FILE, "r", encoding="utf-8") as f:
+    DICCIONARI_PATXETI = json.load(f)  # ara és un diccionari real
 
 DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus.jsonl")
-DICCIONARI_PATXETI = os.path.join(DATA_DIR, "diccionari_patxeti.jsonl")
 EMBEDDINGS_FILE = os.path.join(DATA_DIR, "embeddings.npy")
 TOKEN_LOG_FILE = os.path.join(DATA_DIR, "token_log.json")
 
@@ -154,6 +157,7 @@ def log_tokens(user_id, tokens_used, cost):
 def tradueix_patxeti(paraula):
     p = paraula.lower()
     return DICCIONARI_PATXETI.get(p, None)
+
 
 # --- FUNCIO PRINCIPAL ---
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
