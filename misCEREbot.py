@@ -10,16 +10,18 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 import openai
 from dotenv import load_dotenv
 
-# --- CONFIGURACIÓ I CLAUS ---
 load_dotenv()
+
+# --- CONFIGURACIÓ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
 openai.api_key = OPENAI_API_KEY
 
 SYSTEM_PROMPT = (
     "Ets un bot expert en la Ribera d'Ebre (14 pobles). "
-    "Respón amb estil proper, natural i conversacional, aportant dades històriques fiables del corpus. "
-    "Cada fet històric ha de portar la seva font citada (F1, F2…) només si es parla d'un tema concret."
+    "Respón amb estil patxetí, proper i directe, aportant dades històriques del corpus. "
+    "Cada fet històric ha de portar la seva font citada (F1, F2…) amb títol resumit. "
+    "Si l’usuari demana detalls, amplia la resposta amb més informació disponible, sinó respon breu."
 )
 
 DATA_DIR = "data"
@@ -58,6 +60,7 @@ else:
 
 existing_count = embeddings.shape[0]
 new_docs = corpus[existing_count:]
+
 if new_docs:
     new_embeddings = []
     for entry in new_docs:
@@ -108,54 +111,96 @@ def semantic_search(query, top_k=TOP_K, population=None):
         other_fragments = [f for f in candidates if population.lower() not in f.get("population","").lower()]
         candidates = pop_fragments + other_fragments
 
-    return [f for f in candidates if isinstance(f, dict) and (f.get("summary") or f.get("long_summary"))][:top_k]
+    return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
-def summarize_fragments(fragments, expand=False, list_mode=False, user_id=None, max_chars=1200):
+def verify_location(user_input):
+    all_places = list({entry.get("population","").lower() for entry in corpus})
+    matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
+    return matches[0].capitalize() if matches else None
+
+def ask_openai(prompt, user_id=None, population=None):
+    clean_expired_context()
+
+    correct_loc = verify_location(prompt)
+    if correct_loc and (not population or correct_loc.lower() != population.lower()):
+        population = correct_loc
+
+    # Contextualitza preguntes vagues
+    if user_id and user_id in user_context:
+        last_topic = user_context[user_id].get("last_topic","")
+        if prompt.lower() in ["explica més coses", "continua", "i més"]:
+            prompt = last_topic
+
+    # Cerca semàntica
+    fragments = semantic_search(prompt, population=population)
+    if not fragments:
+        try:
+            resp = openai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role":"system","content":SYSTEM_PROMPT},
+                    {"role":"user","content":prompt}
+                ],
+                max_tokens=500
+            )
+            return [resp.choices[0].message.content.strip()]
+        except Exception as e:
+            return [f"Error amb OpenAI: {e}"]
+
+    # Actualitza context
+    try:
+        emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
+        if user_id:
+            ctx = user_context.setdefault(user_id, {})
+            ctx["last_topic"] = prompt
+            ctx["last_embedding"] = emb_topic
+            ctx["last_time"] = time.time()
+    except Exception:
+        pass
+
+    return fragments
+
+def summarize_fragments(fragments, expand=False, list_mode=False, user_id=None, max_items=10, max_chars=1200):
     if not fragments:
         return ["Escolta’m, però no tinc informació concreta sobre això."]
 
-    max_len = 4000 if expand else max_chars
-    parts = []
-
     if list_mode:
-        for f in fragments[:10]:
-            title = f.get("title", "Sense títol")
-            text = f.get("long_summary", "") or f.get("summary", "")
-            text = " ".join(text.split())
-            if len(text) > 300:
-                text = text[:300].rsplit(".",1)[0] + "."
+        parts = []
+        for f in fragments[:max_items]:
+            title = f.get("title","Sense títol") if isinstance(f, dict) else "Sense títol"
+            text = (f.get("long_summary","") or f.get("summary","")) if isinstance(f, dict) else str(f)
+            text = text.replace("\n"," ").strip()
+            if len(text) > 200:
+                text = text[:200].rsplit(".",1)[0] + "."
             parts.append(f"{title}: {text}")
-        message = "\n\n".join(parts)
-    else:
-        for f in fragments:
-            text = f.get("long_summary", "") or f.get("summary", "")
-            text = " ".join(text.split())
-            parts.append(text)
-        message = " ".join(parts)
-        if len(message) > max_len:
-            message = message[:max_len].rsplit(".",1)[0] + "."
-        # Fonts només si tema concret
-        if len(fragments) == 1:
-            message += f"\nFont: F1 ({fragments[0].get('title','')})"
+        return ["\n".join(parts)]
 
-    return [message]
+    parts = []
+    for f in fragments:
+        if isinstance(f, dict):
+            text = f.get("long_summary","") or f.get("summary","")
+            title = f.get("title","")
+        else:
+            text = str(f)
+            title = ""
+        text = text.replace("\n"," ").strip()
+        parts.append(text)
 
-# --- ASK OPENAI ---
-def ask_openai(prompt, user_id=None, population=None):
-    clean_expired_context()
-    if user_id and user_id in user_context:
-        last_topic = user_context[user_id].get("last_topic","")
-        if not population and last_topic:
-            population = last_topic
+    body = " ".join(parts)
+    if len(body) > max_chars:
+        body = body[:max_chars].rsplit(".",1)[0] + "."
 
-    fragments = semantic_search(prompt, population=population)
-    return fragments
+    source_text = ""
+    if len(fragments) == 1 and isinstance(fragments[0], dict) and fragments[0].get("title"):
+        source_text = f" Font: F1 ({fragments[0]['title']})"
+
+    return [body + source_text]
 
 # --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Hola! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. "
-        "Pregunta’m el que vulguis sobre els 14 pobles o curiositats locals!"
+        "Hola, patxetí! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. "
+        "Pregunta’m el que vulguis sobre els 14 pobles. També pots provar amb curiositats de la zona."
     )
 
 async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,13 +210,11 @@ async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Memòria d’usuari esborrada!")
 
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip()
+    user_text = update.message.text
     user_id = update.message.from_user.id
-    clean_expired_context()
 
-    # Salutacions → resposta natural
-    greetings = ["hola", "bon dia", "bones", "ep"]
-    if any(g in user_text.lower() for g in greetings):
+    salutacions = ["hola", "bon dia", "bona tarda", "ep", "ei"]
+    if any(word in user_text.lower() for word in salutacions):
         await update.message.reply_text(
             "Hola! Com va tot? Vols que t’expliqui alguna curiositat de la Ribera d’Ebre o prefereixes un poble concret?"
         )
@@ -181,25 +224,13 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_list = any(k in user_text.lower() for k in list_keywords)
     expand = needs_expansion(user_text)
 
-    population = None
+    max_chars = 1200
     if user_id in user_context:
-        last_topic = user_context[user_id].get("last_topic","")
-        if last_topic and not any(w in user_text.lower() for w in ["qui","què","on","quan","com"]):
-            population = last_topic
+        if user_text.lower() in ["explica més coses", "continua", "i més"]:
+            max_chars = 3000
 
-    fragments = await asyncio.to_thread(ask_openai, user_text, user_id=user_id, population=population)
-    msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list, user_id=user_id)
-
-    # Actualitzar context
-    try:
-        emb_topic = np.array(openai.embeddings.create(input=user_text, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
-        ctx = user_context.setdefault(user_id, {})
-        ctx["last_topic"] = population or user_text
-        ctx["last_embedding"] = emb_topic
-        ctx["last_time"] = time.time()
-    except Exception:
-        pass
-
+    fragments = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
+    msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list, user_id=user_id, max_chars=max_chars)
     await update.message.reply_text(msgs[0])
 
 # --- CONFIGURACIÓ BOT ---
@@ -208,6 +239,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("forget", forget_cmd))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
 
+# --- INICI BOT ---
 if __name__ == "__main__":
-    print("Bot patxetí amb memòria i respostes naturals actiu...")
+    print("Bot patxetí amb memòria temporal i respostes naturals actiu...")
     app.run_polling()
