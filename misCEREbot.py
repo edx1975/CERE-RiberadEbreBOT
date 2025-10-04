@@ -36,7 +36,6 @@ with open(DICCIONARI_PATXETI_FILE, "r", encoding="utf-8") as f:
 
 TOP_K = 5
 CONTEXT_EXPIRY = 600  # 10 minuts
-MAX_LIST_ELEMENTS = 10
 user_context = {}  # memòria temporal
 
 # --- CARREGAR CORPUS ---
@@ -66,8 +65,7 @@ if new_docs:
     for entry in new_docs:
         text = " ".join([
             entry.get("title",""),
-            entry.get("summary",""),
-            entry.get("long_summary",""),
+            entry.get("long_summary",""),  # Prioritzem long_summary
             " ".join(entry.get("topics", []))
         ])
         try:
@@ -94,6 +92,11 @@ def clean_expired_context():
 
 def needs_expansion(user_query: str) -> bool:
     triggers = ["detall", "detalls", "explica", "explicació", "amplia", "llarg", "més informació", "aprofund"]
+    return any(t in user_query.lower() for t in triggers)
+
+def is_list_query(user_query: str) -> bool:
+    # Paraules clau que indiquen que és una llista
+    triggers = ["llistam", "coses", "històries", "curiositats", "plantes", "menjars", "fets", "events"]
     return any(t in user_query.lower() for t in triggers)
 
 def semantic_search(query, top_k=TOP_K, topics=None, population=None):
@@ -123,32 +126,51 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
         ]
         candidates = filtered if filtered else candidates
 
-    return [f for f in candidates if f.get("long_summary") or f.get("summary")][:top_k]
+    return [f for f in candidates if f.get("summary") or f.get("long_summary")][:top_k]
 
-def truncate_text(text, max_chars=300):
+def truncate_text(text, max_chars=150):
+    """Retorna text tallat a punt o coma propera abans de max_chars"""
     if len(text) <= max_chars:
         return text
-    punt = text.rfind(".", 0, max_chars)
-    if punt != -1:
-        return text[:punt+1]
-    coma = text.rfind(",", 0, max_chars)
-    if coma != -1:
-        return text[:coma+1]
-    return text[:max_chars]
+    # Busquem punt proper abans de max_chars
+    last_dot = text.rfind('.', 0, max_chars)
+    if last_dot != -1:
+        return text[:last_dot+1].strip()
+    # Busquem coma propera
+    last_comma = text.rfind(',', 0, max_chars)
+    if last_comma != -1:
+        return text[:last_comma+1].strip()
+    # Tall si no hi ha punt o coma
+    return text[:max_chars].strip()
 
-def format_response(fragments, expand=False, as_list=False):
-    parts = []
-    for idx, f in enumerate(fragments[:MAX_LIST_ELEMENTS], start=1):
-        content = f.get("long_summary","") or f.get("summary","")
-        if expand:
-            content += " " + (f.get("summary","") if f.get("summary") else "")
-        content = truncate_text(content, max_chars=300)
-        if as_list:
-            part = f"{idx}. {content}\nFont: F{idx} ({f.get('title','')})"
+def summarize_list_short(fragments):
+    """Genera llista curta, cada element <150 caràcters + població"""
+    messages = []
+    current_msg = ""
+    for f in fragments:
+        text = truncate_text(f.get("long_summary","")) + f" ({f.get('population','')})"
+        if current_msg:
+            candidate_msg = current_msg + "\n" + f"- " + text
         else:
-            part = f"{content}\nFont: F{idx} ({f.get('title','')})"
-        parts.append(part)
-    return "\n\n".join(parts)
+            candidate_msg = "- " + text
+        if len(candidate_msg) > 4000:  # Màxim Telegram
+            messages.append(current_msg)
+            current_msg = "- " + text
+        else:
+            current_msg = candidate_msg
+    if current_msg:
+        messages.append(current_msg)
+    return messages
+
+def summarize_fragments(fragments, expand=False):
+    parts = []
+    for idx, f in enumerate(fragments, start=1):
+        base = f"{idx}. {f.get('long_summary','')}"
+        if expand and f.get("summary"):
+            base += f"\nDetalls: {f.get('summary')}"
+        base += f"\nFont: F{idx} ({f.get('title','')})"
+        parts.append(base)
+    return "\n\n".join(parts)  # doble salt de línia entre fragments
 
 def log_tokens(user_id, tokens_used, cost):
     try:
@@ -168,16 +190,21 @@ def log_tokens(user_id, tokens_used, cost):
 
 def tradueix_patxeti(paraula):
     p = paraula.lower()
-    return DICCIONARI_PATXETI.get(p, paraula)
+    return DICCIONARI_PATXETI.get(p, paraula)  # retorna paraula si no hi és
 
 def verify_location(user_input):
+    """Retorna el nom correcte d'un lloc si l'usuari s'ha equivocat"""
     all_places = list({entry.get("population","").lower() for entry in corpus})
     matches = get_close_matches(user_input.lower(), all_places, n=1, cutoff=0.6)
     return matches[0].capitalize() if matches else None
 
-# --- FUNCIO PRINCIPAL ---
 def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
     clean_expired_context()
+
+    # Verificar noms de llocs
+    correct_loc = verify_location(prompt)
+    if correct_loc:
+        population = correct_loc
 
     if not population and user_id and user_id in user_context:
         last_topic = user_context[user_id].get("last_topic","")
@@ -218,23 +245,13 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
             return f"Error amb OpenAI: {e}"
 
     expand = needs_expansion(prompt)
-    as_list = any(w in prompt.lower() for w in ["llista","enumera","mostra","tresors","histories","curiositats"])
-    summary = format_response(fragments, expand=expand, as_list=as_list)
+    if is_list_query(prompt):
+        messages = summarize_list_short(fragments)
+        return messages
+    else:
+        summary = summarize_fragments(fragments, expand=expand)
+        return [summary]
 
-    try:
-        emb_topic = np.array(openai.embeddings.create(input=prompt, model="text-embedding-3-small").data[0].embedding, dtype=np.float32)
-        if user_id:
-            ctx = user_context.setdefault(user_id, {})
-            ctx["last_topic"] = prompt
-            ctx["last_embedding"] = emb_topic
-            ctx["last_time"] = time.time()
-            ctx.setdefault("topics_covered", set()).update(topics)
-    except Exception:
-        pass
-
-    return summary
-
-# --- TELEGRAM HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hola, patxetí! Sóc el bot del Miscel·lania CERE de la Ribera d’Ebre. Pregunta’m el que vulguis sobre Miravet, Rasquera, Tivissa, Ginestar i Benissanet. També pots provar amb curiositats de la zona"
@@ -254,8 +271,9 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for paraula in user_text.lower().split():
         user_text = user_text.replace(paraula, tradueix_patxeti(paraula))
 
-    resp = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
-    await update.message.reply_text(resp)
+    messages = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
+    for msg in messages:
+        await update.message.reply_text(msg)
 
 # --- CONFIGURACIÓ BOT ---
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
