@@ -126,11 +126,14 @@ def semantic_search(query, top_k=TOP_K, topics=None, population=None):
 
 def summarize_fragments(fragments, expand=False, list_mode=False):
     parts = []
+    seen_texts = set()
+    max_items = 10
+
     for f in fragments:
-        text = f.get("long_summary","") if f.get("long_summary") else f.get("summary","")
+        text = f.get("long_summary","") or f.get("summary","")
         if list_mode:
-            # màxim 150 caràcters, tallar per punt o coma prop dels 150
             text = text.strip()
+            # tallar a punt o coma proper als 150 caràcters
             if len(text) > 150:
                 cutoff = text.find(".", 100)
                 if cutoff == -1 or cutoff > 150:
@@ -138,15 +141,29 @@ def summarize_fragments(fragments, expand=False, list_mode=False):
                     if cutoff == -1:
                         cutoff = 150
                 text = text[:cutoff+1].strip()
+            # afegir nom del poble
             text = f"{text} ({f.get('population','')})"
+            # filtrar duplicats
+            if text not in seen_texts:
+                parts.append(text)
+                seen_texts.add(text)
         else:
-            # text seguit, prioritzar long_summary
+            # text narratiu amb font
             base = text
             if expand and f.get("summary"):
                 base += f"\nDetalls: " + f.get("summary")
             text = f"{base}\nFont: F1 ({f.get('title','')})"
-        parts.append(text)
-    return parts
+            parts.append(text)
+
+        if list_mode and len(parts) >= max_items:
+            break
+
+    # quan és llista, retornar un sol missatge amb els elements separats per línies
+    if list_mode:
+        return ["\n".join(parts)]
+    else:
+        return parts
+
 
 def log_tokens(user_id, tokens_used, cost):
     try:
@@ -228,9 +245,11 @@ def ask_openai(prompt, user_id=None, strict_corpus=True, population=None):
             return [f"Error amb OpenAI: {e}"]
 
     expand = needs_expansion(prompt)
+    
+    # cridar summarize_fragments amb list_mode segons keywords
     msgs = summarize_fragments(fragments, expand=expand, list_mode=is_list)
 
-    # Fragmentar missatges llargs > 4000 caràcters
+    # Fragmentar missatges molt llargs (>4000 caràcters) en blocs de 3900
     final_msgs = []
     for m in msgs:
         if len(m) > 4000:
