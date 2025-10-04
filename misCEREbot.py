@@ -245,15 +245,15 @@ async def forget_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     user_id = update.message.from_user.id
-
-    # Traduir paraules patxetí
+    # Traducció paraules patxetí
     for paraula in user_text.lower().split():
         signficat = tradueix_patxeti(paraula.strip(",.!?"))
         if signficat:
-            await update.message.reply_text(f"‘{paraula}’ vol dir **{signficat}** en català estàndard.")
-
+            await update.message.reply_text(f"‘{paraula}’ vol dir {signficat} en català estàndard.")
+    # Consulta al corpus / OpenAI
     resp = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
     await update.message.reply_text(resp)
+
 
 # --- CONFIGURACIÓ BOT ---
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
