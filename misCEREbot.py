@@ -263,7 +263,11 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msgs = await asyncio.to_thread(ask_openai, user_text, user_id=user_id)
 
     for msg in msgs:
-        await update.message.reply_text(msg)
+        # Fragmentar si el missatge supera 4000 caràcters
+        chunk_size = 3900
+        for i in range(0, len(msg), chunk_size):
+            await update.message.reply_text(msg[i:i+chunk_size])
+
 
 # --- CONFIGURACIÓ BOT ---
 app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
