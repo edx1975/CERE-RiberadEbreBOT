@@ -278,6 +278,33 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar?")
 
+import re
+
+# --- HANDLER PER /1, /2, /3, ... ---
+async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    command = update.message.text.strip()
+    m = user_memory.get(chat_id, {})
+    last_docs = m.get("last_docs", [])
+
+    # Extreure número de la comanda (/1 -> 1)
+    match = re.match(r"/(\d+)", command)
+    if not match:
+        return
+    num = int(match.group(1))
+    if num < 1 or num > len(last_docs):
+        await update.message.reply_text("No reconec aquesta font. Torna-ho a provar després d'una cerca.")
+        return
+
+    # Mostrar l'article corresponent
+    doc_idx = last_docs[num - 1]
+    doc = docs[doc_idx]
+    title = doc.get("title", "")
+    summary = doc.get("summary", "")
+    m["last_mode"] = "source_detail"
+    m["active_doc"] = doc_idx
+    await update.message.reply_text(f"Segons l'article «{title}»:\n\n{summary}\n\nVols que t'ampliï amb /mes?")
+
 
 # ---------- START HANDLER ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -298,7 +325,8 @@ def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mes", more_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+    app.add_handler(MessageHandler(filters.COMMAND, numbered_command_handler))
+
     # Signals per tancar netament
     stop_event = asyncio.Event()
     def _sigterm_handler(signum, frame):
