@@ -258,8 +258,11 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m = user_memory.get(chat_id, {})
     
     if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
-        await update.message.reply_text("No tinc context previ d'un article concret. Digues-me sobre què vols informació.")
-        return
+    await update.message.reply_text(
+        "No tinc context previ d'un article concret. Digues-me sobre què vols informació."
+    )
+    return
+
 
     idx = m["active_doc"]
     doc = docs[idx]
@@ -301,8 +304,9 @@ async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT
     doc = docs[doc_idx]
     title = doc.get("title", "")
     summary = doc.get("summary", "")
-    m["last_mode"] = "source_detail"
     m["active_doc"] = doc_idx
+    m["last_mode"] = "source_detail"
+    m["current_page"] = 0
     await update.message.reply_text(f"Segons l'article «{title}»:\n\n{summary}\n\nVols que t'ampliï amb /mes?")
 
 
