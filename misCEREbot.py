@@ -198,88 +198,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Pregunta'm sobre el corpus o temes generals (riuades, guerra civil, pobles...)."
     )
 
-def detect_mode(text: str, memory):
-    """Detecta si és una pregunta nova, una continuació o una conversa casual."""
-    t = text.lower().strip()
+def handle_message(chat_id, text, docs, embeddings, index):
+    # Crear memòria si no existeix
+    if chat_id not in user_memory:
+        user_memory[chat_id] = {}
+    m = user_memory[chat_id]
 
-    # Mode conversa (IA)
-    conversa_keywords = ["com estàs", "què et sembla", "ets un robot", "ets viu", "tu com", "que et sembla", "t'agrada", "ets la ia"]
-    if any(k in t for k in conversa_keywords):
-        return "chat"
-
-    # Si ja hi ha context anterior → mode cita directa
-    if memory and memory.get("last_docs"):
-        return "followup"
-
-    # Per defecte → mode resum d'articles
-    return "summary"
-
-
-def call_llm_chat_mode(user_query):
-    """Mode IA conversa més natural i simpàtic."""
-    prompt = [
-        {"role": "system", "content": "Ets una IA amable i propera del territori de la Ribera d’Ebre. Parla en català occidental (Terres de l’Ebre)."},
-        {"role": "user", "content": user_query}
-    ]
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=prompt,
-        temperature=0.8,
-        max_tokens=200
-    )
-    return resp.choices[0].message.content.strip()
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    text = update.message.text.strip()
-    print(f"[{chat_id}] user: {text}")
-
-    # ---------- Detecció mode ----------
-    m = user_memory.get(chat_id)
+    # Detectar mode
     mode = detect_mode(text, m)
-    print(f"Mode detectat: {mode}")
 
-    # ---------- Mode conversa casual ----------
+    # Gestionar cada mode
     if mode == "chat":
-        try:
-            reply = call_llm_chat_mode(text)
-        except Exception as e:
-            reply = f"S'ha produït un error en mode conversa: {e}"
-        await update.message.reply_text(reply)
-        return
+        reply = call_llm_chat_mode(text)
 
-    # ---------- Mode cita directa / continuació ----------
-    if mode == "followup":
-        last_docs = m.get("last_docs", [])
-        if not last_docs:
-            await update.message.reply_text("No tinc context previ. Digues-me sobre què vols informació.")
-            return
-
-        # Mostra resum curt i ofereix /mes
-        idx = last_docs[0]
-        doc = docs[idx]
-        short = doc.get("summary", "")
-        title = doc.get("title", "")
-        reply = f"Segons l'article «{title}»:\n\n{short}\n\nVols que t'ampliï amb /mes?"
-        await update.message.reply_text(reply)
-        return
-
-    # ---------- Mode resum general ----------
-    try:
-        docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
+    elif mode == "source_detail":
+        # Usar docs previs si existeixen
+        docs_to_use = m.get("last_docs", [])
+        if not docs_to_use:
+            docs_to_use = semantic_search(text, docs, embeddings, index)
         reply = call_llm_with_context(text, docs_to_use)
-    except Exception as e:
-        reply = f"S'ha produït un error en generar la resposta: {e}"
+        # Actualitzar memòria
+        m["last_docs"] = docs_to_use
 
-    push_user_memory(chat_id, text, reply, docs_to_use)
+    else:  # summary
+        docs_to_use = semantic_search(text, docs, embeddings, index)
+        reply = call_llm_with_context(text, docs_to_use)
+        # Afegir fonts
+        titles = [d.get("title", "") for d in docs_to_use]
+        if titles:
+            reply += "\n\nFonts: " + ", ".join(f"«{t}»" for t in titles if t)
+        # Actualitzar memòria
+        m["last_docs"] = docs_to_use
+        if titles:
+            m["active_title"] = titles[0]  # Podem usar-ho per /mes
 
-    # Afegeix fonts al final
-    titles = [docs[i].get("title", "") for i in docs_to_use if i < len(docs)]
-    if titles:
-        reply += "\n\nFonts: " + ", ".join(f"«{t}»" for t in titles if t)
-
-    await update.message.reply_text(reply)
-
+    return reply
 
 
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
