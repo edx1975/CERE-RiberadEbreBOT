@@ -252,34 +252,71 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
 
 
+# ---------- Mode cita directa / selecció d'article ----------
+doc_idx = None
+if text.startswith("/"):
+    try:
+        idx = int(text[1:]) - 1
+        if 0 <= idx < len(docs):
+            doc_idx = idx
+    except ValueError:
+        pass
+else:
+    # Detecta coincidència exacta amb títol
+    for i, d in enumerate(docs):
+        if text.strip().lower() == d.get("title","").lower():
+            doc_idx = i
+            break
+
+if doc_idx is not None:
+    doc = docs[doc_idx]
+    reply = f"Segons l'article «{doc.get('title')}»:\n\n{doc.get('summary')}\n\nVols que t'ampliï amb /mes?"
+    m["last_mode"] = "source_detail"
+    m["active_doc"] = doc_idx
+    m["current_page"] = 0   # <-- inicialitzem pàgina
+    await update.message.reply_text(reply)
+    return
+
+
 # ---------- /mes handler ----------
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     m = user_memory.get(chat_id, {})
-    
-    if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
-    await update.message.reply_text(
-        "No tinc context previ d'un article concret. Digues-me sobre què vols informació."
-    )
-    return
 
+    # Comprovar que hi ha context per un article concret
+    if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
+        await update.message.reply_text(
+            "No tinc context previ d'un article concret. Digues-me sobre què vols informació."
+        )
+        return
 
     idx = m["active_doc"]
     doc = docs[idx]
-    long_text = doc.get("summary_long","")
+    long_text = doc.get("summary_long", "")
 
-    # Paginació per 3500 caràcters
-    chunk_size = 3500
+    # Inicialitzar current_page si no existeix
     if "current_page" not in m:
         m["current_page"] = 0
+
+    chunk_size = 3500
     start = m["current_page"] * chunk_size
     end = start + chunk_size
     chunk = long_text[start:end]
+
     total_pages = (len(long_text) // chunk_size) + 1
     page_number = m["current_page"] + 1
     m["current_page"] += 1
 
+    # Si ja hem enviat tot el text, informar i reiniciar
+    if start >= len(long_text):
+        await update.message.reply_text(
+            "He mostrat tot el contingut de l'article."
+        )
+        m["current_page"] = 0
+        return
+
     await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar?")
+
 
 import re
 
