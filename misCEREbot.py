@@ -11,7 +11,7 @@ Configura a .env:
 import os, json, signal, asyncio
 import numpy as np
 from pathlib import Path
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 import faiss
 from openai import OpenAI
 from telegram import Update
@@ -192,62 +192,101 @@ def push_user_memory(chat_id, question, answer, docs_used):
     m["last_docs"] = docs_used
     
 # ---------- TELEGRAM HANDLERS ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hola! Sóc l'assistent de la Ribera d'Ebre. "
-        "Pregunta'm sobre el corpus o temes generals (riuades, guerra civil, pobles...)."
-    )
+from rapidfuzz import process
 
-def handle_message(chat_id, text, docs, embeddings, index):
-    # Crear memòria si no existeix
-    if chat_id not in user_memory:
-        user_memory[chat_id] = {}
-    m = user_memory[chat_id]
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text.strip()
+    print(f"[{chat_id}] user: {text}")
 
-    # Detectar mode
-    mode = detect_mode(text, m)
+    # ---------- Memòria ----------
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary"})
 
-    # Gestionar cada mode
-    if mode == "chat":
-        reply = call_llm_chat_mode(text)
+    # ---------- Salutacions ----------
+    salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei"]
+    if any(text.lower().startswith(s) for s in salutacions):
+        await update.message.reply_text("Hola! Com et puc ajudar avui?")
+        return
 
-    elif mode == "source_detail":
-        # Usar docs previs si existeixen
-        docs_to_use = m.get("last_docs", [])
-        if not docs_to_use:
-            docs_to_use = semantic_search(text, docs, embeddings, index)
-        reply = call_llm_with_context(text, docs_to_use)
-        # Actualitzar memòria
-        m["last_docs"] = docs_to_use
+    # ---------- Detectar si l'usuari vol un article concret (/id o títol) ----------
+    doc_idx = None
+    # 1️⃣ Comprovar si és /n
+    if text.startswith("/"):
+        try:
+            idx = int(text[1:]) - 1
+            if 0 <= idx < len(m.get("last_docs", [])):
+                doc_idx = m["last_docs"][idx]
+        except ValueError:
+            pass
+    # 2️⃣ Comprovar coincidència amb títol (fuzzy)
+    if doc_idx is None:
+        candidates = [(i, docs[i].get("title","")) for i in range(len(docs))]
+        match = process.extractOne(text, dict(candidates), scorer=fuzz.token_set_ratio)
+        if match and match[1] >= 80:  # threshold ajustable
+            doc_idx = match[2]  # index real
 
-    else:  # summary
-        docs_to_use = semantic_search(text, docs, embeddings, index)
-        reply = call_llm_with_context(text, docs_to_use)
-        # Afegir fonts
-        titles = [d.get("title", "") for d in docs_to_use]
-        if titles:
-            reply += "\n\nFonts: " + ", ".join(f"«{t}»" for t in titles if t)
-        # Actualitzar memòria
-        m["last_docs"] = docs_to_use
-        if titles:
-            m["active_title"] = titles[0]  # Podem usar-ho per /mes
+    # ---------- Mode cita directa si hi ha doc_idx ----------
+    if doc_idx is not None:
+        doc = docs[doc_idx]
+        reply = f"Segons l'article «{doc.get('title')}»:\n\n{doc.get('summary')}\n\nVols que t'ampliï amb /mes?"
+        m["last_mode"] = "source_detail"
+        m["active_doc"] = doc_idx
+        await update.message.reply_text(reply)
+        return
 
-    return reply
+    # ---------- Mode resum general ----------
+    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
+    reply = call_llm_with_context(text, docs_to_use)
+
+    # Afegir fonts numerades al final
+    if docs_to_use:
+        reply += "\n\nFonts (fes clic per ampliar):"
+        for i, idx in enumerate(docs_to_use):
+            title = docs[idx].get("title", "")
+            reply += f"\n/{i+1}: {title}"
+
+    # ---------- Actualitzar memòria ----------
+    m["last_docs"] = docs_to_use
+    m["last_mode"] = "summary"
+
+    await update.message.reply_text(reply)
+
+
+    # ---------- Mode resum general ----------
+    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
+    reply = call_llm_with_context(text, docs_to_use)
+
+    # Afegir fonts numerades
+    if docs_to_use:
+        reply += "\n\nFonts (fes clic per ampliar):"
+        for i, idx in enumerate(docs_to_use):
+            title = docs[idx].get("title", "")
+            reply += f"\n/{i+1}: {title}"
+
+    # ---------- Actualitzar memòria ----------
+    m["last_docs"] = docs_to_use
+    m["last_mode"] = "summary"
+
+    await update.message.reply_text(reply)
 
 
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    m = user_memory.get(chat_id)
-    if not m or not m.get("last_docs"):
-        await update.message.reply_text("No tinc context previ. Digues-me sobre què vols informació.")
+    m = user_memory.get(chat_id, {})
+    
+    if not m or "active_doc" not in m:
+        await update.message.reply_text("No tinc context previ d'un article concret. Digues-me sobre què vols informació.")
         return
 
-    last_docs = m["last_docs"]
+    doc_idx = m["active_doc"]
     user_q = "Expandeix la resposta anterior i afegeix títols de les fonts utilitzades."
     try:
-        reply = call_llm_with_context(user_q, last_docs, temperature=0.0, max_tokens=1200)
+        reply = call_llm_with_context(user_q, [doc_idx], temperature=0.0, max_tokens=1200)
     except Exception as e:
         reply = f"S'ha produït un error: {e}"
+
+    await update.message.reply_text(reply)
+
 
     await update.message.reply_text(reply)
 
