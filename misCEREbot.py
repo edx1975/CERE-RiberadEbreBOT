@@ -36,7 +36,7 @@ TOP_K = 5
 MAX_CONTEXT_DOCS = 5
 USER_MEMORY_SIZE = 6
 MAX_TOKENS = 3500
-MAX_MESSAGE_LENGTH = 4000  # Telegram max per segment
+MAX_MESSAGE_LENGTH = 4096  # Telegram max per segment
 
 # ---------- CARREGA CORPUS ----------
 def load_jsonl(path: str):
@@ -67,25 +67,36 @@ else:
     print("No hi ha FAISS, s'utilitzarà text-match.")
 
 # ---------- MEMÒRIA USUARI ----------
-
 def push_user_memory(chat_id, question, answer, docs_used):
-    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_title": None, "last_mode": None})
+    """ Guarda la memòria de l'usuari """
+    m = user_memory.setdefault(chat_id, {
+        "history": [],
+        "last_docs": [],
+        "last_title": None,
+        "last_mode": None,
+        "active_title": None
+    })
     m["history"].append((question, answer))
     if len(m["history"]) > USER_MEMORY_SIZE:
         m["history"].pop(0)
     m["last_docs"] = docs_used
+    if docs_used:
+        m["active_title"] = docs[docs_used[0]].get("title") if docs_used[0] < len(docs) else None
 
 # ---------- UTILS ----------
 def get_embedding(text: str) -> np.ndarray:
+    """Crida a l'API d'OpenAI per obtenir embedding"""
     resp = client.embeddings.create(model="text-embedding-3-small", input=text)
     return np.array(resp.data[0].embedding, dtype=np.float32)
 
 def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
+    """Retorna els indexes dels documents més rellevants"""
     query_lower = query.lower()
     if index is not None and embeddings is not None:
         q_emb = np.array([get_embedding(query)], dtype=np.float32)
         D, I = index.search(q_emb, top_k)
         return [int(i) for i in I[0] if i != -1]
+    
     # fallback text-match
     scores = []
     for i, d in enumerate(docs):
@@ -107,17 +118,27 @@ Sigues amable i clar.
 """
 
 def build_context_for_docs(doc_indexes):
+    """Construeix el context a partir dels documents seleccionats"""
     parts = []
     for idx in doc_indexes:
         d = docs[idx]
-        parts.append(f"== ARTICLE {idx} ==\nTitle: {d.get('title')}\nSummary: {d.get('summary')}\nLong: {d.get('summary_long')}\n")
+        parts.append(
+            f"== ARTICLE {idx} ==\n"
+            f"Title: {d.get('title')}\n"
+            f"Summary: {d.get('summary')}\n"
+            f"Long: {d.get('summary_long')}\n"
+        )
     return "\n\n".join(parts)
 
 def call_llm_with_context(user_query, doc_indexes, temperature=0.0, max_tokens=800):
+    """Crida a l'LLM amb context dels documents"""
     context_text = build_context_for_docs(doc_indexes)
     prompt = [
         {"role":"system", "content": SYSTEM_PROMPT},
-        {"role":"user", "content": f"Context documents:\n\n{context_text}\n\nPregunta: {user_query}\n\nRespon en català. Si et manca info, diu 'No ho sé segons el corpus'."}
+        {"role":"user", "content":
+            f"Context documents:\n\n{context_text}\n\n"
+            f"Pregunta: {user_query}\n\n"
+            f"Respon en català. Si et manca info, diu 'No ho sé segons el corpus'."}
     ]
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -129,10 +150,10 @@ def call_llm_with_context(user_query, doc_indexes, temperature=0.0, max_tokens=8
 
 # --- Fragmentació de missatges llargs ---
 async def send_long_message(chat_id, text, app):
+    """Telegram no accepta missatges massa llargs, així que els fragmentem"""
     chunks = [text[i:i+MAX_MESSAGE_LENGTH] for i in range(0, len(text), MAX_MESSAGE_LENGTH)]
     for chunk in chunks:
         await app.bot.send_message(chat_id=chat_id, text=chunk)
-        
 # ---------- WRAPPER TELEGRAM ----------
 # --- Detector de mode ---
 def detect_mode(text, memory):
@@ -150,7 +171,8 @@ def detect_mode(text, memory):
 # --- Crida a LLM en mode conversa ---
 def call_llm_chat_mode(user_query):
     prompt = [
-        {"role":"system", "content": "Ets una IA amable i propera del territori de la Ribera d’Ebre. Parla en català occidental (Terres de l’Ebre)."},
+        {"role":"system", "content":
+         "Ets una IA amable i propera del territori de la Ribera d’Ebre. Parla en català occidental (Terres de l’Ebre)."},
         {"role":"user", "content": user_query}
     ]
     resp = client.chat.completions.create(
@@ -191,11 +213,6 @@ async def telegram_message_handler(update: Update, context: ContextTypes.DEFAULT
 
     # Fragmentar i enviar
     await send_long_message(chat_id, reply, context)
-
-
-
-# ---------- FUNCIO GENERAL handle_message ----------
-
 
 # --- /mes handler ---
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
