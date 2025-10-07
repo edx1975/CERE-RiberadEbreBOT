@@ -8,10 +8,10 @@ Configura a .env:
 - OPENAI_API_KEY
 """
 
-import os, json, signal, asyncio
+import os, json, signal, asyncio, re
 import numpy as np
 from pathlib import Path
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz
 import faiss
 from openai import OpenAI
 from telegram import Update
@@ -23,6 +23,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
 client = OpenAI(api_key=OPENAI_API_KEY)
+
 DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus_original.jsonl")
 EMB_NPY = os.path.join(DATA_DIR, "embeddings_G.npy")
@@ -47,9 +48,6 @@ print(f"Corpus carregat: {len(docs)} documents")
 
 # ---------- COINCIDÈNCIES EXACTES ----------
 def find_exact_matches(query: str, docs, threshold=80):
-    """
-    Retorna índexs amb coincidència forta al title, summary, summary_long o topics.
-    """
     q = query.lower()
     matches = []
     for i, d in enumerate(docs):
@@ -68,6 +66,24 @@ def get_embedding(text: str) -> np.ndarray:
     resp = client.embeddings.create(model="text-embedding-3-small", input=text)
     return np.array(resp.data[0].embedding, dtype=np.float32)
 
+def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
+    query_lower = query.lower()
+    
+    if index is not None and embeddings is not None:
+        q_emb = np.array([get_embedding(query)], dtype=np.float32)
+        D, I = index.search(q_emb, top_k)
+        return [int(i) for i in I[0] if i != -1]
+    
+    scores = []
+    for i, d in enumerate(docs):
+        ttext = " ".join(
+            d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
+        ).lower()
+        score = fuzz.token_set_ratio(query_lower, ttext)
+        scores.append((i, score))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [i for i,_ in scores[:top_k]]
+
 # ---------- FAISS INDEX ----------
 use_faiss = False
 index = None
@@ -83,73 +99,8 @@ if Path(FAISS_IDX).exists() and Path(EMB_NPY).exists():
 else:
     print("No hi ha FAISS, s'utilitzarà text-match.")
 
-# Detector de mode
-def detect_mode(text, memory):
-    t = text.lower()
-    # Mode conversa casual
-    if any(x in t for x in ["com estàs", "què et sembla", "ets", "tu", "com et trobes"]):
-        return "chat"
-    # Mode /mes o ampliació de fonts
-    elif "/mes" in t or (memory and memory.get("last_docs")):
-        return "source_detail"
-    # Mode resum general
-    else:
-        return "summary"
-
-# Funció per a mode conversa
-def call_llm_chat_mode(user_query):
-    prompt = [
-        {"role":"system","content":"Ets una IA amable i propera del territori de la Ribera d’Ebre. Parla en català occidental (Terres de l’Ebre)."},
-        {"role":"user","content": user_query}
-    ]
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=prompt,
-        temperature=0.7,
-        max_tokens=200
-    )
-    return resp.choices[0].message.content.strip()
-
-# Funció general amb context (summary o source_detail)
-def call_llm_with_context(user_query, docs):
-    context_text = "\n".join(d.get("content","") for d in docs)
-    prompt = [
-        {"role":"system","content":"Ets una IA experta, amable i precisa. Resumeix la informació amb claredat i inclou cites si escau."},
-        {"role":"user","content": f"{user_query}\n\nContext:\n{context_text}"}
-    ]
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=prompt,
-        temperature=0.2,
-        max_tokens=400
-    )
-    return resp.choices[0].message.content.strip()
-
-def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
-    """
-    Retorna els índexs dels documents més rellevants.
-    1) Si FAISS i embeddings existeixen, fem cerca semàntica.
-    2) Si no, fem fallback fuzzy sobre title + summary + topics.
-    """
-    query_lower = query.lower()
-    
-    if index is not None and embeddings is not None:
-        q_emb = np.array([get_embedding(query)], dtype=np.float32)
-        D, I = index.search(q_emb, top_k)
-        return [int(i) for i in I[0] if i != -1]
-    
-    # fallback text-match amb topics
-    scores = []
-    for i, d in enumerate(docs):
-        ttext = " ".join(
-            d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
-        ).lower()
-        score = fuzz.token_set_ratio(query_lower, ttext)
-        scores.append((i, score))
-    scores.sort(key=lambda x: x[1], reverse=True)
-    return [i for i,_ in scores[:top_k]]
-
 # ---------- LLM ----------
+
 SYSTEM_PROMPT = """
 Ets una IA experta en la història i temes dels pobles de la Ribera d'Ebre.
 HAS DE RESPONDRE NOMÉS AMB LA INFORMACIÓ DEL CORPUS.
@@ -181,31 +132,66 @@ def call_llm_with_context(user_query, doc_indexes, temperature=0.0, max_tokens=8
     )
     return resp.choices[0].message.content.strip()
 
+def call_llm_chat_mode(user_query):
+    prompt = [
+        {"role":"system","content":"Ets una IA amable i propera del territori de la Ribera d’Ebre. Parla en català occidental (Terres de l’Ebre)."},
+        {"role":"user","content": user_query}
+    ]
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=prompt,
+        temperature=0.7,
+        max_tokens=200
+    )
+    return resp.choices[0].message.content.strip()
+
+def detect_mode(text, memory):
+    t = text.lower()
+    # Mode conversa casual
+    if any(x in t for x in ["com estàs", "què et sembla", "ets", "tu", "com et trobes"]):
+        return "chat"
+    # Mode /mes o ampliació de fonts
+    elif "/mes" in t or (memory and memory.get("last_docs")):
+        return "source_detail"
+    else:
+        return "summary"
+
 # ---------- MEMÒRIA USUARI ----------
 user_memory = {}
 
-def push_user_memory(chat_id, question, answer, docs_used):
-    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": []})
+def push_user_memory(chat_id, question, answer, docs_used, active_doc=None, last_mode="summary"):
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": last_mode, "active_doc": active_doc, "current_page": 0})
     m["history"].append((question, answer))
     if len(m["history"]) > USER_MEMORY_SIZE:
         m["history"].pop(0)
     m["last_docs"] = docs_used
+    m["last_mode"] = last_mode
+    m["active_doc"] = active_doc
+    m["current_page"] = 0
     
 # ---------- TELEGRAM HANDLERS ----------
 
-# ---------- TELEGRAM HANDLERS ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
     print(f"[{chat_id}] user: {text}")
 
     # ---------- Memòria ----------
-    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None})
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None, "current_page":0})
 
     # ---------- Salutacions ----------
     salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei"]
     if any(text.lower().startswith(s) for s in salutacions):
         await update.message.reply_text("Hola! Com et puc ajudar avui?")
+        return
+
+    # ---------- Detectar mode ----------
+    mode = detect_mode(text, m)
+
+    # ---------- Mode conversa casual ----------
+    if mode == "chat":
+        reply = call_llm_chat_mode(text)
+        await update.message.reply_text(reply)
         return
 
     # ---------- Detectar si l'usuari vol un article concret (/id o títol) ----------
@@ -223,12 +209,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 doc_idx = i
                 break
 
-    # ---------- Mode cita directa si hi ha doc_idx ----------
+    # ---------- Mode cita directa ----------
     if doc_idx is not None:
         doc = docs[doc_idx]
         reply = f"Segons l'article «{doc.get('title')}»:\n\n{doc.get('summary')}\n\nVols que t'ampliï amb /mes?"
-        m["last_mode"] = "source_detail"
-        m["active_doc"] = doc_idx
+        push_user_memory(chat_id, text, reply, [doc_idx], active_doc=doc_idx, last_mode="source_detail")
         await update.message.reply_text(reply)
         return
 
@@ -244,38 +229,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = docs[idx].get("title", "")
             reply += f"\n/{i+1}: {title}"
 
-    # ---------- Actualitzar memòria ----------
-    m["last_docs"] = docs_to_use
-    m["last_mode"] = "summary"
-    m["active_doc"] = None
-
+    push_user_memory(chat_id, text, reply, docs_to_use, active_doc=None, last_mode="summary")
     await update.message.reply_text(reply)
-
-
-# ---------- Mode cita directa / selecció d'article ----------
-doc_idx = None
-if text.startswith("/"):
-    try:
-        idx = int(text[1:]) - 1
-        if 0 <= idx < len(docs):
-            doc_idx = idx
-    except ValueError:
-        pass
-else:
-    # Detecta coincidència exacta amb títol
-    for i, d in enumerate(docs):
-        if text.strip().lower() == d.get("title","").lower():
-            doc_idx = i
-            break
-
-if doc_idx is not None:
-    doc = docs[doc_idx]
-    reply = f"Segons l'article «{doc.get('title')}»:\n\n{doc.get('summary')}\n\nVols que t'ampliï amb /mes?"
-    m["last_mode"] = "source_detail"
-    m["active_doc"] = doc_idx
-    m["current_page"] = 0   # <-- inicialitzem pàgina
-    await update.message.reply_text(reply)
-    return
 
 
 # ---------- /mes handler ----------
@@ -283,51 +238,38 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     m = user_memory.get(chat_id, {})
 
-    # Comprovar que hi ha context per un article concret
     if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
-        await update.message.reply_text(
-            "No tinc context previ d'un article concret. Digues-me sobre què vols informació."
-        )
+        await update.message.reply_text("No tinc context previ d'un article concret. Digues-me sobre què vols informació.")
         return
 
     idx = m["active_doc"]
     doc = docs[idx]
-    long_text = doc.get("summary_long", "")
-
-    # Inicialitzar current_page si no existeix
-    if "current_page" not in m:
-        m["current_page"] = 0
+    long_text = doc.get("summary_long","")
 
     chunk_size = 3500
-    start = m["current_page"] * chunk_size
+    start = m.get("current_page",0) * chunk_size
     end = start + chunk_size
     chunk = long_text[start:end]
 
     total_pages = (len(long_text) // chunk_size) + 1
-    page_number = m["current_page"] + 1
-    m["current_page"] += 1
+    page_number = m.get("current_page",0) + 1
+    m["current_page"] = m.get("current_page",0) + 1
 
-    # Si ja hem enviat tot el text, informar i reiniciar
     if start >= len(long_text):
-        await update.message.reply_text(
-            "He mostrat tot el contingut de l'article."
-        )
+        await update.message.reply_text("He mostrat tot el contingut de l'article.")
         m["current_page"] = 0
         return
 
     await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar?")
 
 
-import re
-
-# --- HANDLER PER /1, /2, /3, ... ---
+# ---------- Handler per /1, /2, /3, ... ----------
 async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     command = update.message.text.strip()
     m = user_memory.get(chat_id, {})
     last_docs = m.get("last_docs", [])
 
-    # Extreure número de la comanda (/1 -> 1)
     match = re.match(r"/(\d+)", command)
     if not match:
         return
@@ -336,23 +278,17 @@ async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text("No reconec aquesta font. Torna-ho a provar després d'una cerca.")
         return
 
-    # Mostrar l'article corresponent
-    doc_idx = last_docs[num - 1]
+    doc_idx = last_docs[num-1]
     doc = docs[doc_idx]
-    title = doc.get("title", "")
-    summary = doc.get("summary", "")
-    m["active_doc"] = doc_idx
-    m["last_mode"] = "source_detail"
-    m["current_page"] = 0
+    title = doc.get("title","")
+    summary = doc.get("summary","")
+    push_user_memory(chat_id, command, summary, last_docs, active_doc=doc_idx, last_mode="source_detail")
     await update.message.reply_text(f"Segons l'article «{title}»:\n\n{summary}\n\nVols que t'ampliï amb /mes?")
 
 
 # ---------- START HANDLER ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hola! Sóc l'assistent de la Ribera d'Ebre. "
-        "Pregunta'm sobre el corpus o temes generals."
-    )
+    await update.message.reply_text("Hola! Sóc l'assistent de la Ribera d'Ebre. Pregunta'm sobre el corpus o temes generals.")
 
 
 # ---------- RUN BOT ----------
@@ -361,14 +297,12 @@ def run_bot():
         raise RuntimeError("Posa TELEGRAM_TOKEN a l'entorn")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Handlers
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mes", more_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.COMMAND, numbered_command_handler))
 
-    # Signals per tancar netament
     stop_event = asyncio.Event()
     def _sigterm_handler(signum, frame):
         print("Tancant per senyal...")
