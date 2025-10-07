@@ -27,17 +27,13 @@ DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus_original.jsonl")
 EMB_NPY = os.path.join(DATA_DIR, "embeddings_G.npy")
 FAISS_IDX = os.path.join(DATA_DIR, "faiss_index_G.index")
-docs= CORPUS_FILE
+
 TOP_K = 5
 MAX_CONTEXT_DOCS = 6
 USER_MEMORY_SIZE = 6
 
 # ---------- CARREGA CORPUS ----------
-
 def load_jsonl(path: str):
-    """
-    Retorna una llista de diccionaris llegits des d'un fitxer JSONL.
-    """
     docs = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -46,11 +42,10 @@ def load_jsonl(path: str):
     return docs
 
 print("Carregant corpus...")
-docs = load_jsonl(CORPUS_FILE)  # <-- ara sí, docs és una llista de dicts
+docs = load_jsonl(CORPUS_FILE)
 print(f"Corpus carregat: {len(docs)} documents")
 
 # ---------- COINCIDÈNCIES EXACTES ----------
-
 def find_exact_matches(query: str, docs, threshold=80):
     """
     Retorna índexs amb coincidència forta al title, summary, summary_long o topics.
@@ -58,7 +53,6 @@ def find_exact_matches(query: str, docs, threshold=80):
     q = query.lower()
     matches = []
     for i, d in enumerate(docs):
-        # Construeix el text a comparar
         ttext = " ".join(
             d.get("topics", []) +
             [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
@@ -70,54 +64,14 @@ def find_exact_matches(query: str, docs, threshold=80):
     return [m[0] for m in matches]
 
 # ---------- SEMANTIC SEARCH ----------
-
-def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
-    query_lower = query.lower()
-    if index is not None and embeddings is not None:
-        q_emb = np.array([get_embedding(query)], dtype=np.float32)
-        D, I = index.search(q_emb, top_k)
-        return [int(i) for i in I[0] if i != -1]
-
-    # fallback text-match amb topics
-    scores = []
-    for i, d in enumerate(docs):
-        ttext = " ".join(
-            d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
-        ).lower()
-        score = fuzz.token_set_ratio(query_lower, ttext)
-        scores.append((i, score))
-    scores.sort(key=lambda x: x[1], reverse=True)
-    return [i for i,_ in scores[:top_k]]
-
-# ---------- OPENAI CLIENT ----------
-client = OpenAI(api_key=OPENAI_API_KEY)
-
 def get_embedding(text: str) -> np.ndarray:
     resp = client.embeddings.create(model="text-embedding-3-small", input=text)
     return np.array(resp.data[0].embedding, dtype=np.float32)
 
-# ---------- CARREGA CORPUS ----------
-def load_jsonl(path: str):
-    docs = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                docs.append(json.loads(line))
-    return docs
-
-print("Carregant corpus...")
-corpus = load_jsonl(CORPUS_FILE)
-titles = [d.get("title","") for d in corpus]
-summaries = [d.get("summary","") for d in corpus]
-summary_longs = [d.get("summary_long","") for d in corpus]
-print(f"Corpus carregat: {len(corpus)} documents")
-
-# ---------- INDEX FAISS ----------
+# ---------- FAISS INDEX ----------
 use_faiss = False
 index = None
-
-
-
+embeddings = None
 if Path(FAISS_IDX).exists() and Path(EMB_NPY).exists():
     try:
         embeddings = np.load(EMB_NPY)
@@ -129,24 +83,6 @@ if Path(FAISS_IDX).exists() and Path(EMB_NPY).exists():
 else:
     print("No hi ha FAISS, s'utilitzarà text-match.")
 
-# ---------- COINCIDÈNCIES EXACTES ----------
-def find_exact_matches(query: str, docs, threshold=80):
-    """
-    Retorna índexs amb coincidència forta al title, summary o topics.
-    Útil per preguntes molt específiques.
-    """
-    q = query.lower()
-    matches = []
-    for i, d in enumerate(docs):
-        ttext = " ".join(d.get("topics", []) + [d.get("title",""), d.get("summary","")]).lower()
-        score = fuzz.token_set_ratio(q, ttext)
-        if score >= threshold:
-            matches.append((i, score))
-    matches.sort(key=lambda x: x[1], reverse=True)
-    return [m[0] for m in matches]
-
-
-# ---------- SEMANTIC SEARCH ----------
 def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
     """
     Retorna els índexs dels documents més rellevants.
@@ -156,7 +92,6 @@ def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
     query_lower = query.lower()
     
     if index is not None and embeddings is not None:
-        # embeddings de la query
         q_emb = np.array([get_embedding(query)], dtype=np.float32)
         D, I = index.search(q_emb, top_k)
         return [int(i) for i in I[0] if i != -1]
@@ -164,7 +99,9 @@ def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
     # fallback text-match amb topics
     scores = []
     for i, d in enumerate(docs):
-        ttext = " ".join(d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]).lower()
+        ttext = " ".join(
+            d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
+        ).lower()
         score = fuzz.token_set_ratio(query_lower, ttext)
         scores.append((i, score))
     scores.sort(key=lambda x: x[1], reverse=True)
@@ -184,7 +121,7 @@ Sigues amable i clar.
 def build_context_for_docs(doc_indexes):
     parts = []
     for idx in doc_indexes:
-        d = corpus[idx]
+        d = docs[idx]
         parts.append(f"== ARTICLE {idx} ==\nTitle: {d.get('title')}\nSummary: {d.get('summary')}\nLong: {d.get('summary_long')}\n")
     return "\n\n".join(parts)
 
@@ -211,10 +148,13 @@ def push_user_memory(chat_id, question, answer, docs_used):
     if len(m["history"]) > USER_MEMORY_SIZE:
         m["history"].pop(0)
     m["last_docs"] = docs_used
-
+    
 # ---------- TELEGRAM HANDLERS ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hola! Sóc l'assistent de la Ribera d'Ebre. Pregunta'm sobre el corpus o temes generals (riuades, guerra civil, pobles...).")
+    await update.message.reply_text(
+        "Hola! Sóc l'assistent de la Ribera d'Ebre. "
+        "Pregunta'm sobre el corpus o temes generals (riuades, guerra civil, pobles...)."
+    )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -222,42 +162,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"[{chat_id}] user: {text}")
 
     # ---------- Salutacions ----------
-    salutacions = ["hola","bon dia","bona tarda","bona nit","ei"]
+    salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei", "ep", "xeic", "xéc"]
     if any(text.lower().startswith(s) for s in salutacions):
         await update.message.reply_text("Hola! Com et puc ajudar avui?")
         return
 
-    # ---------- Cerca exacta ----------
-    exact_idxs = find_exact_matches(text, docs)
-    docs_to_use = []
-    mode = "exact"
-    if exact_idxs:
-        docs_to_use = exact_idxs[:1]  # Només el millor match
+    # ---------- Decideix mode ----------
+    m = user_memory.get(chat_id)
+    if m and m.get("last_docs"):
+        # Usuari vol continuar amb tema anterior? → Mode cita / mes
+        is_followup = True
     else:
-        # ---------- Cerca semàntica ----------
-        docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
-        mode = "semantic"
+        is_followup = False
 
-    # ---------- Crida a l'LLM amb context ----------
+    # ---------- Cerca semàntica ----------
+    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
+
+    # ---------- Crida a LLM ----------
     try:
         reply = call_llm_with_context(text, docs_to_use)
     except Exception as e:
         reply = f"S'ha produït un error en generar la resposta: {e}"
 
-    # ---------- Memòria d'usuari ----------
+    # ---------- Memòria ----------
     push_user_memory(chat_id, text, reply, docs_to_use)
 
-    # ---------- Resposta segons mode ----------
-    if mode == "exact" and docs_to_use:
-        idx = docs_to_use[0]
+    # ---------- Resposta ----------
+    if is_followup and m.get("last_docs"):
+        # Mode cita directa + /mes
+        idx = m["last_docs"][0]  # el primer article de l’últim tema
         doc = docs[idx]
-        short = doc.get("summary","")
-        title = doc.get("title","")
+        short = doc.get("summary", "")
+        title = doc.get("title", "")
         text_reply = f"Segons l'article «{title}»:\n\n{short}\n\nVols que t'ampliï amb /mes?"
         await update.message.reply_text(text_reply)
     else:
+        # Mode resum general → mostra resum combinat sense citar articles
         await update.message.reply_text(reply)
-
 
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -272,6 +213,7 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = call_llm_with_context(user_q, last_docs, temperature=0.0, max_tokens=1200)
     except Exception as e:
         reply = f"S'ha produït un error: {e}"
+
     await update.message.reply_text(reply)
 
 # ---------- RUN BOT ----------
