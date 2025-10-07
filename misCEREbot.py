@@ -21,7 +21,8 @@ from dotenv import load_dotenv
 # ---------- CONFIG ----------
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY").strip()
+client = OpenAI(api_key=OPENAI_API_KEY)
 DATA_DIR = "data"
 CORPUS_FILE = os.path.join(DATA_DIR, "corpus_original.jsonl")
 EMB_NPY = os.path.join(DATA_DIR, "embeddings_G.npy")
