@@ -83,6 +83,48 @@ if Path(FAISS_IDX).exists() and Path(EMB_NPY).exists():
 else:
     print("No hi ha FAISS, s'utilitzarà text-match.")
 
+# Detector de mode
+def detect_mode(text, memory):
+    t = text.lower()
+    # Mode conversa casual
+    if any(x in t for x in ["com estàs", "què et sembla", "ets", "tu", "com et trobes"]):
+        return "chat"
+    # Mode /mes o ampliació de fonts
+    elif "/mes" in t or (memory and memory.get("last_docs")):
+        return "source_detail"
+    # Mode resum general
+    else:
+        return "summary"
+
+# Funció per a mode conversa
+def call_llm_chat_mode(user_query):
+    prompt = [
+        {"role":"system","content":"Ets una IA amable i propera del territori de la Ribera d’Ebre. Parla en català occidental (Terres de l’Ebre)."},
+        {"role":"user","content": user_query}
+    ]
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=prompt,
+        temperature=0.7,
+        max_tokens=200
+    )
+    return resp.choices[0].message.content.strip()
+
+# Funció general amb context (summary o source_detail)
+def call_llm_with_context(user_query, docs):
+    context_text = "\n".join(d.get("content","") for d in docs)
+    prompt = [
+        {"role":"system","content":"Ets una IA experta, amable i precisa. Resumeix la informació amb claredat i inclou cites si escau."},
+        {"role":"user","content": f"{user_query}\n\nContext:\n{context_text}"}
+    ]
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=prompt,
+        temperature=0.2,
+        max_tokens=400
+    )
+    return resp.choices[0].message.content.strip()
+
 def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
     """
     Retorna els índexs dels documents més rellevants.
@@ -156,49 +198,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Pregunta'm sobre el corpus o temes generals (riuades, guerra civil, pobles...)."
     )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    text = update.message.text.strip()
-    print(f"[{chat_id}] user: {text}")
+def handle_message(chat_id, text, docs, embeddings, index):
+    # Crear memòria si no existeix
+    if chat_id not in user_memory:
+        user_memory[chat_id] = {}
+    m = user_memory[chat_id]
 
-    # ---------- Salutacions ----------
-    salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei", "ep", "xeic", "xéc"]
-    if any(text.lower().startswith(s) for s in salutacions):
-        await update.message.reply_text("Hola! Com et puc ajudar avui?")
-        return
+    # Detectar mode
+    mode = detect_mode(text, m)
 
-    # ---------- Decideix mode ----------
-    m = user_memory.get(chat_id)
-    if m and m.get("last_docs"):
-        # Usuari vol continuar amb tema anterior? → Mode cita / mes
-        is_followup = True
-    else:
-        is_followup = False
+    # Gestionar cada mode
+    if mode == "chat":
+        reply = call_llm_chat_mode(text)
 
-    # ---------- Cerca semàntica ----------
-    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
-
-    # ---------- Crida a LLM ----------
-    try:
+    elif mode == "source_detail":
+        # Usar docs previs si existeixen
+        docs_to_use = m.get("last_docs", [])
+        if not docs_to_use:
+            docs_to_use = semantic_search(text, docs, embeddings, index)
         reply = call_llm_with_context(text, docs_to_use)
-    except Exception as e:
-        reply = f"S'ha produït un error en generar la resposta: {e}"
+        # Actualitzar memòria
+        m["last_docs"] = docs_to_use
 
-    # ---------- Memòria ----------
-    push_user_memory(chat_id, text, reply, docs_to_use)
+    else:  # summary
+        docs_to_use = semantic_search(text, docs, embeddings, index)
+        reply = call_llm_with_context(text, docs_to_use)
+        # Afegir fonts
+        titles = [d.get("title", "") for d in docs_to_use]
+        if titles:
+            reply += "\n\nFonts: " + ", ".join(f"«{t}»" for t in titles if t)
+        # Actualitzar memòria
+        m["last_docs"] = docs_to_use
+        if titles:
+            m["active_title"] = titles[0]  # Podem usar-ho per /mes
 
-    # ---------- Resposta ----------
-    if is_followup and m.get("last_docs"):
-        # Mode cita directa + /mes
-        idx = m["last_docs"][0]  # el primer article de l’últim tema
-        doc = docs[idx]
-        short = doc.get("summary", "")
-        title = doc.get("title", "")
-        text_reply = f"Segons l'article «{title}»:\n\n{short}\n\nVols que t'ampliï amb /mes?"
-        await update.message.reply_text(text_reply)
-    else:
-        # Mode resum general → mostra resum combinat sense citar articles
-        await update.message.reply_text(reply)
+    return reply
+
 
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
