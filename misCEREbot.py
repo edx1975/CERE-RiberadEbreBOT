@@ -1,17 +1,7 @@
-"""
-Bot Telegram per preguntar sobre el corpus de la Ribera d'Ebre.
-Requisits:
-pip install python-telegram-bot==20.4 openai numpy faiss-cpu rapidfuzz python-dotenv
-
-Configura a .env:
-- TELEGRAM_TOKEN
-- OPENAI_API_KEY
-"""
-
 import os, json, signal, asyncio
 import numpy as np
 from pathlib import Path
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 import faiss
 from openai import OpenAI
 from telegram import Update
@@ -45,29 +35,6 @@ print("Carregant corpus...")
 docs = load_jsonl(CORPUS_FILE)
 print(f"Corpus carregat: {len(docs)} documents")
 
-# ---------- COINCIDÈNCIES EXACTES ----------
-def find_exact_matches(query: str, docs, threshold=80):
-    """
-    Retorna índexs amb coincidència forta al title, summary, summary_long o topics.
-    """
-    q = query.lower()
-    matches = []
-    for i, d in enumerate(docs):
-        ttext = " ".join(
-            d.get("topics", []) +
-            [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
-        ).lower()
-        score = fuzz.token_set_ratio(q, ttext)
-        if score >= threshold:
-            matches.append((i, score))
-    matches.sort(key=lambda x: x[1], reverse=True)
-    return [m[0] for m in matches]
-
-# ---------- SEMANTIC SEARCH ----------
-def get_embedding(text: str) -> np.ndarray:
-    resp = client.embeddings.create(model="text-embedding-3-small", input=text)
-    return np.array(resp.data[0].embedding, dtype=np.float32)
-
 # ---------- FAISS INDEX ----------
 use_faiss = False
 index = None
@@ -83,67 +50,23 @@ if Path(FAISS_IDX).exists() and Path(EMB_NPY).exists():
 else:
     print("No hi ha FAISS, s'utilitzarà text-match.")
 
-# Detector de mode
-def detect_mode(text, memory):
-    t = text.lower()
-    # Mode conversa casual
-    if any(x in t for x in ["com estàs", "què et sembla", "ets", "tu", "com et trobes"]):
-        return "chat"
-    # Mode /mes o ampliació de fonts
-    elif "/mes" in t or (memory and memory.get("last_docs")):
-        return "source_detail"
-    # Mode resum general
-    else:
-        return "summary"
+# ---------- EMBEDDINGS ----------
+def get_embedding(text: str) -> np.ndarray:
+    resp = client.embeddings.create(model="text-embedding-3-small", input=text)
+    return np.array(resp.data[0].embedding, dtype=np.float32)
 
-# Funció per a mode conversa
-def call_llm_chat_mode(user_query):
-    prompt = [
-        {"role":"system","content":"Ets una IA amable i propera del territori de la Ribera d’Ebre. Parla en català occidental (Terres de l’Ebre)."},
-        {"role":"user","content": user_query}
-    ]
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=prompt,
-        temperature=0.7,
-        max_tokens=200
-    )
-    return resp.choices[0].message.content.strip()
-
-# Funció general amb context (summary o source_detail)
-def call_llm_with_context(user_query, docs):
-    context_text = "\n".join(d.get("content","") for d in docs)
-    prompt = [
-        {"role":"system","content":"Ets una IA experta, amable i precisa. Resumeix la informació amb claredat i inclou cites si escau."},
-        {"role":"user","content": f"{user_query}\n\nContext:\n{context_text}"}
-    ]
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=prompt,
-        temperature=0.2,
-        max_tokens=400
-    )
-    return resp.choices[0].message.content.strip()
-
+# ---------- SEMANTIC SEARCH ----------
 def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
-    """
-    Retorna els índexs dels documents més rellevants.
-    1) Si FAISS i embeddings existeixen, fem cerca semàntica.
-    2) Si no, fem fallback fuzzy sobre title + summary + topics.
-    """
     query_lower = query.lower()
-    
     if index is not None and embeddings is not None:
         q_emb = np.array([get_embedding(query)], dtype=np.float32)
         D, I = index.search(q_emb, top_k)
         return [int(i) for i in I[0] if i != -1]
     
-    # fallback text-match amb topics
+    # fallback fuzzy
     scores = []
     for i, d in enumerate(docs):
-        ttext = " ".join(
-            d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
-        ).lower()
+        ttext = " ".join(d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]).lower()
         score = fuzz.token_set_ratio(query_lower, ttext)
         scores.append((i, score))
     scores.sort(key=lambda x: x[1], reverse=True)
@@ -181,16 +104,17 @@ def call_llm_with_context(user_query, doc_indexes, temperature=0.0, max_tokens=8
     )
     return resp.choices[0].message.content.strip()
 
-# ---------- MEMÒRIA USUARI ----------
+# ---------- MEMÒRIA ----------
 user_memory = {}
 
 def push_user_memory(chat_id, question, answer, docs_used):
-    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": []})
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary"})
     m["history"].append((question, answer))
     if len(m["history"]) > USER_MEMORY_SIZE:
         m["history"].pop(0)
     m["last_docs"] = docs_used
-    
+    m["last_mode"] = "summary"
+
 # ---------- TELEGRAM HANDLERS ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -198,54 +122,70 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Pregunta'm sobre el corpus o temes generals (riuades, guerra civil, pobles...)."
     )
 
-def handle_message(chat_id, text, docs, embeddings, index):
-    # Crear memòria si no existeix
-    if chat_id not in user_memory:
-        user_memory[chat_id] = {}
-    m = user_memory[chat_id]
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text.strip()
+    print(f"[{chat_id}] user: {text}")
 
-    # Detectar mode
-    mode = detect_mode(text, m)
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary"})
 
-    # Gestionar cada mode
-    if mode == "chat":
-        reply = call_llm_chat_mode(text)
+    # ---------- Salutacions ----------
+    salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei"]
+    if any(text.lower().startswith(s) for s in salutacions):
+        await update.message.reply_text("Hola! Com et puc ajudar avui?")
+        return
 
-    elif mode == "source_detail":
-        # Usar docs previs si existeixen
-        docs_to_use = m.get("last_docs", [])
-        if not docs_to_use:
-            docs_to_use = semantic_search(text, docs, embeddings, index)
-        reply = call_llm_with_context(text, docs_to_use)
-        # Actualitzar memòria
-        m["last_docs"] = docs_to_use
+    # ---------- Comprovar si l'usuari demana un article concret (/n o títol) ----------
+    doc_idx = None
+    # 1️⃣ /n
+    if text.startswith("/"):
+        try:
+            idx = int(text[1:]) - 1
+            if 0 <= idx < len(m.get("last_docs", [])):
+                doc_idx = m["last_docs"][idx]
+        except ValueError:
+            pass
+    # 2️⃣ fuzzy amb títols
+    if doc_idx is None:
+        candidates = {i: docs[i].get("title","") for i in range(len(docs))}
+        match = process.extractOne(text, candidates, scorer=fuzz.token_set_ratio)
+        if match and match[1] >= 80:
+            doc_idx = match[2]
 
-    else:  # summary
-        docs_to_use = semantic_search(text, docs, embeddings, index)
-        reply = call_llm_with_context(text, docs_to_use)
-        # Afegir fonts
-        titles = [d.get("title", "") for d in docs_to_use]
-        if titles:
-            reply += "\n\nFonts: " + ", ".join(f"«{t}»" for t in titles if t)
-        # Actualitzar memòria
-        m["last_docs"] = docs_to_use
-        if titles:
-            m["active_title"] = titles[0]  # Podem usar-ho per /mes
+    # ---------- Mode cita directa ----------
+    if doc_idx is not None:
+        doc = docs[doc_idx]
+        reply = f"Segons l'article «{doc.get('title')}»:\n\n{doc.get('summary')}\n\nVols que t'ampliï amb /mes?"
+        m["last_mode"] = "source_detail"
+        m["active_doc"] = doc_idx
+        await update.message.reply_text(reply)
+        return
 
-    return reply
+    # ---------- Mode resum general ----------
+    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
+    reply = call_llm_with_context(text, docs_to_use)
 
+    # Afegir fonts numerades
+    if docs_to_use:
+        reply += "\n\nFonts (fes clic per ampliar):"
+        for i, idx in enumerate(docs_to_use):
+            title = docs[idx].get("title", "")
+            reply += f"\n/{i+1}: {title}"
+
+    push_user_memory(chat_id, text, reply, docs_to_use)
+    await update.message.reply_text(reply)
 
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     m = user_memory.get(chat_id)
-    if not m or not m.get("last_docs"):
+    if not m or "active_doc" not in m:
         await update.message.reply_text("No tinc context previ. Digues-me sobre què vols informació.")
         return
 
-    last_docs = m["last_docs"]
+    last_doc_idx = m["active_doc"]
     user_q = "Expandeix la resposta anterior i afegeix títols de les fonts utilitzades."
     try:
-        reply = call_llm_with_context(user_q, last_docs, temperature=0.0, max_tokens=1200)
+        reply = call_llm_with_context(user_q, [last_doc_idx], temperature=0.0, max_tokens=1200)
     except Exception as e:
         reply = f"S'ha produït un error: {e}"
 
