@@ -192,15 +192,15 @@ def push_user_memory(chat_id, question, answer, docs_used):
     m["last_docs"] = docs_used
     
 # ---------- TELEGRAM HANDLERS ----------
-from rapidfuzz import process
 
+# ---------- TELEGRAM HANDLERS ----------
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text.strip()
     print(f"[{chat_id}] user: {text}")
 
     # ---------- Memòria ----------
-    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary"})
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None})
 
     # ---------- Salutacions ----------
     salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei"]
@@ -210,20 +210,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---------- Detectar si l'usuari vol un article concret (/id o títol) ----------
     doc_idx = None
-    # 1️⃣ Comprovar si és /n
     if text.startswith("/"):
         try:
             idx = int(text[1:]) - 1
-            if 0 <= idx < len(m.get("last_docs", [])):
-                doc_idx = m["last_docs"][idx]
+            if 0 <= idx < len(docs):
+                doc_idx = idx
         except ValueError:
             pass
-    # 2️⃣ Comprovar coincidència amb títol (fuzzy)
-    if doc_idx is None:
-        candidates = [(i, docs[i].get("title","")) for i in range(len(docs))]
-        match = process.extractOne(text, dict(candidates), scorer=fuzz.token_set_ratio)
-        if match and match[1] >= 80:  # threshold ajustable
-            doc_idx = match[2]  # index real
+    else:
+        for i, d in enumerate(docs):
+            if text.strip().lower() == d.get("title","").lower():
+                doc_idx = i
+                break
 
     # ---------- Mode cita directa si hi ha doc_idx ----------
     if doc_idx is not None:
@@ -235,6 +233,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ---------- Mode resum general ----------
+    await update.message.reply_text("..rumiant..")
     docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
     reply = call_llm_with_context(text, docs_to_use)
 
@@ -248,55 +247,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------- Actualitzar memòria ----------
     m["last_docs"] = docs_to_use
     m["last_mode"] = "summary"
+    m["active_doc"] = None
 
     await update.message.reply_text(reply)
 
 
-    # ---------- Mode resum general ----------
-    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
-    reply = call_llm_with_context(text, docs_to_use)
-
-    # Afegir fonts numerades
-    if docs_to_use:
-        reply += "\n\nFonts (fes clic per ampliar):"
-        for i, idx in enumerate(docs_to_use):
-            title = docs[idx].get("title", "")
-            reply += f"\n/{i+1}: {title}"
-
-    # ---------- Actualitzar memòria ----------
-    m["last_docs"] = docs_to_use
-    m["last_mode"] = "summary"
-
-    await update.message.reply_text(reply)
-
-
+# ---------- /mes handler ----------
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     m = user_memory.get(chat_id, {})
     
-    if not m or "active_doc" not in m:
+    if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
         await update.message.reply_text("No tinc context previ d'un article concret. Digues-me sobre què vols informació.")
         return
 
-    doc_idx = m["active_doc"]
-    user_q = "Expandeix la resposta anterior i afegeix títols de les fonts utilitzades."
-    try:
-        reply = call_llm_with_context(user_q, [doc_idx], temperature=0.0, max_tokens=1200)
-    except Exception as e:
-        reply = f"S'ha produït un error: {e}"
+    idx = m["active_doc"]
+    doc = docs[idx]
+    long_text = doc.get("summary_long","")
 
-    await update.message.reply_text(reply)
+    # Paginació per 3500 caràcters
+    chunk_size = 3500
+    if "current_page" not in m:
+        m["current_page"] = 0
+    start = m["current_page"] * chunk_size
+    end = start + chunk_size
+    chunk = long_text[start:end]
+    total_pages = (len(long_text) // chunk_size) + 1
+    page_number = m["current_page"] + 1
+    m["current_page"] += 1
+
+    await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar?")
 
 
-    await update.message.reply_text(reply)
-
-# ---------- RUN BOT ----------
-# ---------- TELEGRAM START HANDLER ----------
+# ---------- START HANDLER ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hola! Sóc l'assistent de la Ribera d'Ebre. "
         "Pregunta'm sobre el corpus o temes generals."
     )
+
 
 # ---------- RUN BOT ----------
 def run_bot():
@@ -304,12 +293,12 @@ def run_bot():
         raise RuntimeError("Posa TELEGRAM_TOKEN a l'entorn")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-
+    
     # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("mes", more_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_message_handler))
-
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
     # Signals per tancar netament
     stop_event = asyncio.Event()
     def _sigterm_handler(signum, frame):
@@ -320,6 +309,7 @@ def run_bot():
 
     print("Bot engegat. Waiting for messages...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     run_bot()
