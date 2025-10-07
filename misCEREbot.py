@@ -295,7 +295,8 @@ def run_bot():
     if not TELEGRAM_TOKEN:
         raise RuntimeError("Posa TELEGRAM_TOKEN a l'entorn")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text(
+        "Hola! Sóc l'assistent de la Ribera d'Ebre. Pregunta'm sobre el corpus o temes generals."
     app.add_handler(CommandHandler("mes", more_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
