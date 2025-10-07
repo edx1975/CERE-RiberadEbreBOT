@@ -138,9 +138,10 @@ async def telegram_message_handler(update: Update, context: ContextTypes.DEFAULT
     # Mostra "..rumiant.." abans del resum
     await update.message.reply_text("..rumiant..")
     
-    # Generem la resposta
-    reply = handle_message(chat_id, text, docs, embeddings, index)
+    # Generem la resposta en thread separat
+    reply = await asyncio.to_thread(handle_message, chat_id, text, docs, embeddings, index)
     await update.message.reply_text(reply)
+
 
 # ---------- FUNCIO GENERAL handle_message ----------
 def handle_message(chat_id, text, docs, embeddings, index):
@@ -194,6 +195,7 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not m or not m.get("last_docs") or m.get("last_mode") != "direct":
         await update.message.reply_text("No tinc context previ. Digues-me sobre què vols informació.")
         return
+
     idx = m["last_docs"][0]
     d = docs[idx]
     long_text = d.get("summary_long","")
@@ -205,10 +207,12 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start = m["current_page"] * chunk_size
     end = start + chunk_size
     chunk = long_text[start:end]
-    total_pages = (len(long_text)//chunk_size)+1
-    page_number = m["current_page"]+1
+    total_pages = (len(long_text) + chunk_size - 1) // chunk_size
+    page_number = m["current_page"] + 1
     m["current_page"] += 1
+
     await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar?")
+
 
 # ---------- RUN BOT ----------
 def run_bot():
