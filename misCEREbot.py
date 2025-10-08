@@ -66,23 +66,92 @@ def get_embedding(text: str) -> np.ndarray:
     resp = client.embeddings.create(model="text-embedding-3-small", input=text)
     return np.array(resp.data[0].embedding, dtype=np.float32)
 
-def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5):
+def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5, town=None):
+    """
+    Retorna els índexs dels documents més rellevants.
+    Filtra per poble si town és indicat.
+    """
+    filtered_docs = []
+    filtered_indexes = []
+
+    for i, d in enumerate(docs):
+        towns = [t.lower() for t in d.get("population", [])]
+        if town:
+            if town.lower() in towns:
+                filtered_docs.append(d)
+                filtered_indexes.append(i)
+        else:
+            filtered_docs.append(d)
+            filtered_indexes.append(i)
+
     query_lower = query.lower()
-    
+
+    # Si FAISS i embeddings existeixen
     if index is not None and embeddings is not None:
         q_emb = np.array([get_embedding(query)], dtype=np.float32)
         D, I = index.search(q_emb, top_k)
-        return [int(i) for i in I[0] if i != -1]
-    
+        # Només retornem índexs dins filtered_indexes
+        result = [i for i in I[0] if i != -1 and i in filtered_indexes]
+        return result[:top_k]
+
+    # fallback text-match amb topics, title, summary, summary_long
     scores = []
-    for i, d in enumerate(docs):
+    for idx, d in zip(filtered_indexes, filtered_docs):
         ttext = " ".join(
             d.get("topics", []) + [d.get("title",""), d.get("summary",""), d.get("summary_long","")]
         ).lower()
         score = fuzz.token_set_ratio(query_lower, ttext)
-        scores.append((i, score))
+        scores.append((idx, score))
     scores.sort(key=lambda x: x[1], reverse=True)
     return [i for i,_ in scores[:top_k]]
+
+
+# ---------- Detecció de poble i tema ----------
+def detect_town(question, docs):
+    """
+    Retorna el poble detectat dins de la pregunta.
+    Busca coincidències amb la llista de pobles del corpus (campo 'population' o 'town').
+    """
+    q_lower = question.lower()
+    for d in docs:
+        towns = [t.lower() for t in d.get("population", [])]
+        for t in towns:
+            if t in q_lower:
+                return t
+    return None
+
+def detect_topic(question, keywords=None):
+    """
+    Retorna el tema detectat segons paraules clau.
+    """
+    if not keywords:
+        keywords = ["riuades", "església", "guerra civil", "castell", "riu", "pobles", "moli", "mercat"]
+    q_lower = question.lower()
+    for kw in keywords:
+        if kw in q_lower:
+            return kw
+    return None
+
+def update_context(memory, detected_town, detected_topic):
+    """
+    Si poble o tema canvia, reinicia el context de memòria.
+    """
+    reset_context = False
+
+    if detected_town and detected_town != memory.get("last_town"):
+        memory["last_town"] = detected_town
+        reset_context = True
+
+    if detected_topic and detected_topic != memory.get("last_topic"):
+        memory["last_topic"] = detected_topic
+        reset_context = True
+
+    if reset_context:
+        memory["last_docs"] = []
+        memory["active_doc"] = None
+        memory["current_page"] = 0
+        memory["last_mode"] = "summary"
+
 
 # ---------- FAISS INDEX ----------
 use_faiss = False
@@ -177,12 +246,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"[{chat_id}] user: {text}")
 
     # ---------- Memòria ----------
-    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None, "last_town": None, "current_page": 0})
+    m = user_memory.setdefault(chat_id, {
+        "history": [],
+        "last_docs": [],
+        "last_mode": "summary",
+        "active_doc": None,
+        "last_town": None,
+        "last_topic": None
+    })
+
+   # Detectem poble i tema
+    detected_town = detect_town(text, docs)
+    detected_topic = detect_topic(text)
+
+    # Actualitzem context si cal
+    update_context(m, detected_town, detected_topic)
+
+    # ---------- Mode resum general ----------
+    await update.message.reply_text("..rumiant..")
+
+    # Passar town detectat a la cerca
+    docs_to_use = semantic_search(
+            text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS, town=detected_town
+    )
+
+    reply = call_llm_with_context(text, docs_to_use)
+
+
 
     # ---------- Salutacions ----------
     salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei"]
     if any(text.lower().startswith(s) for s in salutacions):
-        await update.message.reply_text("Hola! Com et puc ajudar avui?")
+        await update.message.reply_text("Hola! Sóc un bot del Miscel·lània del CERE. Ara mateix tinc info general de la Ribera i concreta de Benissanet, Miravet, Rasquera, Ginestar i Tivissa. Com et puc ajudar avui?")
         return
 
     # ---------- Detectar si l'usuari vol un article concret (/id o títol) ----------
@@ -210,10 +305,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply)
         return
 
-    # ---------- Mode resum general ----------
-    await update.message.reply_text("..rumiant..")
-    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS)
-    reply = call_llm_with_context(text, docs_to_use)
 
     # Afegir fonts numerades al final
     if docs_to_use:
@@ -335,7 +426,7 @@ async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT
     m["last_mode"] = "source_detail"
     m["current_page"] = 0  # Només per /mes
 
-    await update.message.reply_text(f"Segons l'article «{title}»\n\nInto: {summary}\n\nVols veure el resum sencer de l'article amb /mes?")
+    await update.message.reply_text(f"Segons l'article «{title}»\n\nIntroducció:\n {summary}\n\nVols veure el resum sencer de l'article amb /mes?")
 
 def deep_search_by_town(town_name, docs):
     """
