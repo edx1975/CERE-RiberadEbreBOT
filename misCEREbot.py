@@ -177,21 +177,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"[{chat_id}] user: {text}")
 
     # ---------- Memòria ----------
-    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None, "current_page":0})
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None, "last_town": None, "current_page": 0})
 
     # ---------- Salutacions ----------
     salutacions = ["hola", "bon dia", "bona tarda", "bona nit", "ei"]
     if any(text.lower().startswith(s) for s in salutacions):
         await update.message.reply_text("Hola! Com et puc ajudar avui?")
-        return
-
-    # ---------- Detectar mode ----------
-    mode = detect_mode(text, m)
-
-    # ---------- Mode conversa casual ----------
-    if mode == "chat":
-        reply = call_llm_chat_mode(text)
-        await update.message.reply_text(reply)
         return
 
     # ---------- Detectar si l'usuari vol un article concret (/id o títol) ----------
@@ -209,11 +200,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 doc_idx = i
                 break
 
-    # ---------- Mode cita directa ----------
+    # ---------- Mode cita directa si hi ha doc_idx ----------
     if doc_idx is not None:
         doc = docs[doc_idx]
         reply = f"Segons l'article «{doc.get('title')}»:\n\n{doc.get('summary')}\n\nVols que t'ampliï amb /mes?"
-        push_user_memory(chat_id, text, reply, [doc_idx], active_doc=doc_idx, last_mode="source_detail")
+        m["last_mode"] = "source_detail"
+        m["active_doc"] = doc_idx
+        m["current_page"] = 0
         await update.message.reply_text(reply)
         return
 
@@ -229,7 +222,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = docs[idx].get("title", "")
             reply += f"\n/{i+1}: {title}"
 
-    push_user_memory(chat_id, text, reply, docs_to_use, active_doc=None, last_mode="summary")
+    # ---------- Si LLM no sap, fem cerca profunda ----------
+    if "No ho sé segons el corpus" in reply:
+        town_name = None
+        # Cercar poble a la pregunta entre topics dels documents
+        for d in docs:
+            for t in d.get("topics", []):
+                if t.lower() in text.lower():
+                    town_name = t
+                    break
+            if town_name:
+                break
+        # Si ja tenim poble de memòria
+        if not town_name and m.get("last_town"):
+            town_name = m.get("last_town")
+
+        if town_name:
+            snippet, doc_idx = deep_search_by_town(town_name, docs)
+            if snippet:
+                doc = docs[doc_idx]
+                reply = f"Segons l'article «{doc.get('title')}» a {town_name}:\n\n{snippet}\n\nVols que t'ampliï amb /mes?"
+                m["active_doc"] = doc_idx
+                m["last_mode"] = "source_detail"
+                m["current_page"] = 0
+                m["last_town"] = town_name
+
+    # ---------- Actualitzar memòria ----------
+    m["last_docs"] = docs_to_use
+    if m.get("last_mode") != "source_detail":
+        m["last_mode"] = "summary"
+        m["active_doc"] = None
+
     await update.message.reply_text(reply)
 
 
@@ -238,29 +261,47 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     m = user_memory.get(chat_id, {})
 
+    # Comprovar que hi ha context per un article concret
     if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
-        await update.message.reply_text("No tinc context previ d'un article concret. Digues-me sobre què vols informació.")
+        await update.message.reply_text(
+            "No tinc context previ d'un article concret. Digues-me sobre què vols informació."
+        )
         return
 
     idx = m["active_doc"]
     doc = docs[idx]
-    long_text = doc.get("summary_long","")
+    long_text = doc.get("summary_long", "")
+    author = doc.get("author","Desconegut")
+
+    # Inicialitzar current_page si no existeix
+    if "current_page" not in m:
+        m["current_page"] = 0
 
     chunk_size = 3500
-    start = m.get("current_page",0) * chunk_size
+    start = m["current_page"] * chunk_size
     end = start + chunk_size
     chunk = long_text[start:end]
 
-    total_pages = (len(long_text) // chunk_size) + 1
-    page_number = m.get("current_page",0) + 1
-    m["current_page"] = m.get("current_page",0) + 1
+    total_pages = (len(long_text) + chunk_size - 1) // chunk_size
+    page_number = m["current_page"] + 1
+    m["current_page"] += 1
 
+    # Si ja hem enviat tot el text
     if start >= len(long_text):
-        await update.message.reply_text("He mostrat tot el contingut de l'article.")
+        await update.message.reply_text(
+            f"Final de l'article. Autor: {author}"
+        )
         m["current_page"] = 0
         return
 
-    await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar?")
+    # Si encara queden pàgines
+    if page_number < total_pages:
+        await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar amb /mes?")
+    else:
+        # Última pàgina
+        await update.message.reply_text(f"{chunk}\n\nFinal de l'article. Autor: {author}")
+        m["current_page"] = 0
+
 
 
 # ---------- Handler per /1, /2, /3, ... ----------
@@ -285,6 +326,26 @@ async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT
     push_user_memory(chat_id, command, summary, last_docs, active_doc=doc_idx, last_mode="source_detail")
     await update.message.reply_text(f"Segons l'article «{title}»:\n\n{summary}\n\nVols que t'ampliï amb /mes?")
 
+def deep_search_by_town(town_name, docs):
+    """
+    Busca coincidències dins del long_summary dels articles que contenen el nom del poble.
+    Retorna el primer fragment rellevant i l'índex del document.
+    """
+    town_lower = town_name.lower()
+    for i, d in enumerate(docs):
+        # Comprovem si el poble apareix en topics, title o summary llarg
+        combined_text = " ".join(d.get("topics", []) + [d.get("title",""), d.get("summary_long","")]).lower()
+        if town_lower in combined_text:
+            # Busquem el fragment dins del long_summary
+            long_text = d.get("summary_long","")
+            # Opcional: agafem les primeres 500-1000 caràcters que continguin el poble
+            idx = long_text.lower().find(town_lower)
+            if idx != -1:
+                start = max(0, idx - 50)
+                end = min(len(long_text), idx + 300)
+                snippet = long_text[start:end].strip()
+                return snippet, i
+    return None, None
 
 # ---------- START HANDLER ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
