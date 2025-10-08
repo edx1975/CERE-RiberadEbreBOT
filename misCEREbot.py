@@ -93,6 +93,8 @@ def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5, town
         # Només retornem índexs dins filtered_indexes
         result = [i for i in I[0] if i != -1 and i in filtered_indexes]
         return result[:top_k]
+    
+    print(f"[semantic_search] town={town}, query='{query}', total_docs={len(docs)}")
 
     # fallback text-match amb topics, title, summary, summary_long
     scores = []
@@ -104,6 +106,8 @@ def semantic_search(query: str, docs, embeddings=None, index=None, top_k=5, town
         scores.append((idx, score))
     scores.sort(key=lambda x: x[1], reverse=True)
     return [i for i,_ in scores[:top_k]]
+
+    print(f"[semantic_search] Fallback scores top5={scores[:5]}")
 
 
 # ---------- Detecció de poble i tema ----------
@@ -189,6 +193,7 @@ def build_context_for_docs(doc_indexes):
 
 def call_llm_with_context(user_query, doc_indexes, temperature=0.0, max_tokens=800):
     context_text = build_context_for_docs(doc_indexes)
+    print(f"[call_llm_with_context] user_query='{user_query}', doc_indexes={doc_indexes}")
     prompt = [
         {"role":"system", "content": SYSTEM_PROMPT},
         {"role":"user", "content": f"Context documents:\n\n{context_text}\n\nPregunta: {user_query}\n\nRespon en català. Si et manca info, diu 'No ho sé segons el corpus'."}
@@ -267,27 +272,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     detected_town = detect_town(text, docs)
     detected_topic = detect_topic(text)
 
-    # --- NOVETAT: mantenim context si no detecta poble però hi havia un darrer ---
+    # --- Mantenim poble si s'infereix pel context ---
     if not detected_town and m.get("last_town"):
         if re.search(r"\b(seu|seva|seves|seus|del poble|del municipi|de la vila|la seva|i a|i el|i la)\b", text.lower()):
             detected_town = m["last_town"]
         elif len(text.split()) <= 5:
             detected_town = m["last_town"]
 
-    # --- NOVETAT: mantenim context si no detecta tema però hi havia un darrer ---
+    # --- Mantenim tema si s'infereix pel context ---
     if not detected_topic and m.get("last_topic"):
-        # Si parla amb referències genèriques (“i també”, “i l’altra”, etc.)
         if re.search(r"\b(i|també|altres|l’altra|el mateix|a més)\b", text.lower()):
             detected_topic = m["last_topic"]
-        # Si menciona un altre poble però sense tema → mantenim tema
         elif detected_town and not detect_topic(text):
             detected_topic = m["last_topic"]
 
-    # Si detectem nou poble o tema, els actualitzem a la memòria
+    # Actualitzem memòria
     if detected_town:
         m["last_town"] = detected_town
     if detected_topic:
         m["last_topic"] = detected_topic
+
+    # --- 🔍 DEBUG: mostra quin context s'està usant ---
+    print(f"[{chat_id}] → Context actiu: town='{m.get('last_town')}', topic='{m.get('last_topic')}'")
 
     # Combinar context per reforçar la cerca semàntica
     query_text = text
@@ -298,7 +304,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif detected_topic:
         query_text += f" {detected_topic}"
 
-    # Actualitzem el context global
     update_context(m, detected_town, detected_topic)
 
     # ---------- Detectar si l'usuari vol un article concret (/n o títol exacte) ----------
@@ -330,6 +335,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---------- Mode resum general ----------
     await update.message.reply_text("..rumiant..")
+    
+    print(f"[{chat_id}] DEBUG detectat → town={detected_town}, topic={detected_topic}, query_text='{query_text}'")
 
     docs_to_use = semantic_search(
         query_text, docs, embeddings, index,
@@ -365,43 +372,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         m["active_doc"] = None
 
     await update.message.reply_text(reply)
-
-
-
-# ---------- /mes handler ----------
-# ---------- /mes handler ----------
-# ---------- /mes handler ----------
-async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    m = user_memory.get(chat_id, {})
-
-    if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
-        await update.message.reply_text("No tinc context previ d'un article concret. Digues-me sobre què vols informació.")
-        return
-
-    idx = m["active_doc"]
-    doc = docs[idx]
-    long_text = doc.get("summary_long", "")
-    author = doc.get("author", "Autor desconegut")
-
-    chunk_size = 3500
-    start = m.get("current_page", 0) * chunk_size
-    end = start + chunk_size
-    chunk = long_text[start:end]
-
-    total_pages = (len(long_text) - 1) // chunk_size + 1
-    page_number = m.get("current_page", 0) + 1
-
-    if chunk:
-        m["current_page"] += 1
-        if page_number == total_pages:
-            await update.message.reply_text(f"{chunk}\n\nFinal de l’article.\nAutor de l'article original: {author}")
-            m["current_page"] = 0
-        else:
-            await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar amb /mes?")
-    else:
-        await update.message.reply_text("He mostrat tot el contingut de l'article.")
-        m["current_page"] = 0
 
 
 # ---------- Handler per /1, /2, /3, ... ----------
