@@ -291,7 +291,7 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Última pàgina
         if page_number == total_pages:
             await update.message.reply_text(
-                f"{chunk}\n\nFinal de l’article.\nAutor: {author}"
+                f"{chunk}\n\nFinal del resum de l’article.\nAutor de l'article original: {author}"
             )
             m["current_page"] = 0  # reiniciar pàgina
         else:
@@ -335,7 +335,7 @@ async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT
     m["last_mode"] = "source_detail"
     m["current_page"] = 0  # Només per /mes
 
-    await update.message.reply_text(f"Segons l'article «{title}»\nResum: {summary}\n\nVols veure l'article sencer amb /mes?")
+    await update.message.reply_text(f"Segons l'article «{title}»\n\nInto: {summary}\n\nVols veure el resum sencer de l'article amb /mes?")
 
 def deep_search_by_town(town_name, docs):
     """
