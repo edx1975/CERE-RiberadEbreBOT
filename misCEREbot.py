@@ -266,6 +266,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---------- Detectem poble i tema ----------
     detected_town = detect_town(text, docs)
     detected_topic = detect_topic(text)
+
+    # --- NOVETAT: mantenim context si no detecta poble però hi havia un darrer ---
+    if not detected_town and m.get("last_town"):
+        if re.search(r"\b(seu|seva|seves|seus|del poble|del municipi|de la vila|la seva|i a|i el|i la)\b", text.lower()):
+            detected_town = m["last_town"]
+        elif len(text.split()) <= 5:
+            detected_town = m["last_town"]
+
+    # --- NOVETAT: mantenim context si no detecta tema però hi havia un darrer ---
+    if not detected_topic and m.get("last_topic"):
+        # Si parla amb referències genèriques (“i també”, “i l’altra”, etc.)
+        if re.search(r"\b(i|també|altres|l’altra|el mateix|a més)\b", text.lower()):
+            detected_topic = m["last_topic"]
+        # Si menciona un altre poble però sense tema → mantenim tema
+        elif detected_town and not detect_topic(text):
+            detected_topic = m["last_topic"]
+
+    # Si detectem nou poble o tema, els actualitzem a la memòria
+    if detected_town:
+        m["last_town"] = detected_town
+    if detected_topic:
+        m["last_topic"] = detected_topic
+
+    # Combinar context per reforçar la cerca semàntica
+    query_text = text
+    if detected_town and detected_topic:
+        query_text += f" {detected_town} {detected_topic}"
+    elif detected_town:
+        query_text += f" {detected_town}"
+    elif detected_topic:
+        query_text += f" {detected_topic}"
+
+    # Actualitzem el context global
     update_context(m, detected_town, detected_topic)
 
     # ---------- Detectar si l'usuari vol un article concret (/n o títol exacte) ----------
@@ -279,13 +312,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     else:
         for i, d in enumerate(docs):
-            if text.strip().lower() == d.get("title","").lower():
+            if text.strip().lower() == d.get("title", "").lower():
                 doc_idx = i
                 break
 
     if doc_idx is not None:
         doc = docs[doc_idx]
-        summary = doc.get("summary","")
+        summary = doc.get("summary", "")
         if len(summary) > 3500:
             summary = summary[:3500] + "…"
         reply = f"Segons l'article «{doc.get('title')}»\n\nResum: {summary}\n\nVols que t'ampliï amb /mes?"
@@ -297,8 +330,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---------- Mode resum general ----------
     await update.message.reply_text("..rumiant..")
-    docs_to_use = semantic_search(text, docs, embeddings, index, top_k=MAX_CONTEXT_DOCS, town=detected_town)
-    reply = call_llm_with_context(text, docs_to_use)
+
+    docs_to_use = semantic_search(
+        query_text, docs, embeddings, index,
+        top_k=MAX_CONTEXT_DOCS, town=detected_town
+    )
+    reply = call_llm_with_context(query_text, docs_to_use)
 
     # ---------- Afegir fonts numerades ----------
     if docs_to_use:
@@ -312,7 +349,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         snippet, doc_idx = deep_search_by_town(detected_town, docs)
         if snippet:
             doc = docs[doc_idx]
-            reply = f"Segons l'article «{doc.get('title')}» a {detected_town}:\n\n{snippet}\n\nVols que t'ampliï amb /mes?"
+            reply = (
+                f"Segons l'article «{doc.get('title')}» a {detected_town}:\n\n"
+                f"{snippet}\n\nVols que t'ampliï amb /mes?"
+            )
             m["active_doc"] = doc_idx
             m["last_mode"] = "source_detail"
             m["current_page"] = 0
@@ -325,6 +365,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         m["active_doc"] = None
 
     await update.message.reply_text(reply)
+
 
 
 # ---------- /mes handler ----------
