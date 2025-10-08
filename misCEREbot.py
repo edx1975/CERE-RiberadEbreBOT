@@ -405,6 +405,71 @@ async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+# ---------- /mes handler ----------
+async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    m = user_memory.get(chat_id, {})
+
+    if not m or m.get("last_mode") != "source_detail" or m.get("active_doc") is None:
+        await update.message.reply_text("No tinc context previ d'un article concret. Digues-me sobre què vols informació.")
+        return
+
+    idx = m["active_doc"]
+    doc = docs[idx]
+    long_text = doc.get("summary_long", "")
+    author = doc.get("author", "Autor desconegut")
+
+    chunk_size = 3500
+    start = m.get("current_page", 0) * chunk_size
+    end = start + chunk_size
+    chunk = long_text[start:end]
+
+    total_pages = (len(long_text) - 1) // chunk_size + 1
+    page_number = m.get("current_page", 0) + 1
+
+    if chunk:
+        m["current_page"] += 1
+        if page_number == total_pages:
+            await update.message.reply_text(f"{chunk}\n\nFinal de l’article.\nAutor de l'article original: {author}")
+            m["current_page"] = 0
+        else:
+            await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar amb /mes?")
+    else:
+        await update.message.reply_text("He mostrat tot el contingut de l'article.")
+        m["current_page"] = 0
+
+
+# ---------- Handler per /1, /2, /3, ... ----------
+async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    command = update.message.text.strip()
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None, "current_page": 0})
+
+    import re
+    match = re.match(r"/(\d+)", command)
+    if not match:
+        return
+    num = int(match.group(1))
+    last_docs = m.get("last_docs", [])
+    if num < 1 or num > len(last_docs):
+        await update.message.reply_text("No reconec aquesta font. Torna-ho a provar després d'una cerca.")
+        return
+
+    doc_idx = last_docs[num - 1]
+    doc = docs[doc_idx]
+    summary = doc.get("summary","")
+    if len(summary) > 3500:
+        summary = summary[:3500] + "…"
+
+    m["active_doc"] = doc_idx
+    m["last_mode"] = "source_detail"
+    m["current_page"] = 0
+
+    await update.message.reply_text(
+        f"Segons l'article «{doc.get('title')}»\n\nResum: {summary}\n\nVols veure el resum sencer de l'article amb /mes?"
+    )
+
+
 def deep_search_by_town(town_name, docs):
     """
     Busca coincidències dins del long_summary dels articles que contenen el nom del poble.
