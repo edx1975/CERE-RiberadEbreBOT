@@ -257,6 +257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------- /mes handler ----------
+# ---------- /mes handler ----------
 async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     m = user_memory.get(chat_id, {})
@@ -271,60 +272,70 @@ async def more_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     idx = m["active_doc"]
     doc = docs[idx]
     long_text = doc.get("summary_long", "")
-    author = doc.get("author","Desconegut")
+    author = doc.get("author", "Autor desconegut")  # assignar autor
 
-    # Inicialitzar current_page si no existeix
-    if "current_page" not in m:
-        m["current_page"] = 0
-
+    # Paginació per 3500 caràcters
     chunk_size = 3500
-    start = m["current_page"] * chunk_size
+    start = m.get("current_page", 0) * chunk_size
     end = start + chunk_size
     chunk = long_text[start:end]
 
-    total_pages = (len(long_text) + chunk_size - 1) // chunk_size
-    page_number = m["current_page"] + 1
-    m["current_page"] += 1
+    # Comptar pàgines
+    total_pages = (len(long_text) - 1) // chunk_size + 1
+    page_number = m.get("current_page", 0) + 1
 
-    # Si ja hem enviat tot el text
-    if start >= len(long_text):
+    # Incrementar pàgina només si hi ha més text
+    if chunk:
+        m["current_page"] = m.get("current_page", 0) + 1
+
+        # Última pàgina
+        if page_number == total_pages:
+            await update.message.reply_text(
+                f"{chunk}\n\nFinal de l’article.\nAutor: {author}"
+            )
+            m["current_page"] = 0  # reiniciar pàgina
+        else:
+            await update.message.reply_text(
+                f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar amb /mes?"
+            )
+    else:
         await update.message.reply_text(
-            f"Final de l'article. Autor: {author}"
+            "He mostrat tot el contingut de l'article."
         )
         m["current_page"] = 0
-        return
-
-    # Si encara queden pàgines
-    if page_number < total_pages:
-        await update.message.reply_text(f"{chunk}\n\n({page_number}/{total_pages})\nVols continuar amb /mes?")
-    else:
-        # Última pàgina
-        await update.message.reply_text(f"{chunk}\n\nFinal de l'article. Autor: {author}")
-        m["current_page"] = 0
-
 
 
 # ---------- Handler per /1, /2, /3, ... ----------
+# --- HANDLER PER /1, /2, /3, ... ---
 async def numbered_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     command = update.message.text.strip()
-    m = user_memory.get(chat_id, {})
-    last_docs = m.get("last_docs", [])
+    m = user_memory.setdefault(chat_id, {"history": [], "last_docs": [], "last_mode": "summary", "active_doc": None, "current_page": 0})
 
+    # Extreure número de la comanda (/1 -> 1)
+    import re
     match = re.match(r"/(\d+)", command)
     if not match:
         return
     num = int(match.group(1))
+    last_docs = m.get("last_docs", [])
     if num < 1 or num > len(last_docs):
         await update.message.reply_text("No reconec aquesta font. Torna-ho a provar després d'una cerca.")
         return
 
-    doc_idx = last_docs[num-1]
+    # Mostrar el summary inicial
+    doc_idx = last_docs[num - 1]
     doc = docs[doc_idx]
-    title = doc.get("title","")
-    summary = doc.get("summary","")
-    push_user_memory(chat_id, command, summary, last_docs, active_doc=doc_idx, last_mode="source_detail")
-    await update.message.reply_text(f"Segons l'article «{title}»:\n\n{summary}\n\nVols que t'ampliï amb /mes?")
+    title = doc.get("title", "")
+    summary = doc.get("summary", "")
+    if len(summary) > 3500:
+        summary = summary[:3500] + "…"
+
+    m["active_doc"] = doc_idx
+    m["last_mode"] = "source_detail"
+    m["current_page"] = 0  # Només per /mes
+
+    await update.message.reply_text(f"Segons l'article «{title}»\nResum: {summary}\n\nVols veure l'article sencer amb /mes?")
 
 def deep_search_by_town(town_name, docs):
     """
