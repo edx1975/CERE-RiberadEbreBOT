@@ -149,23 +149,24 @@ def is_general_corpus(text: str) -> bool:
 
 
 def detectar_poble_en_text(text: str) -> Optional[str]:
-    """Detecta pobles dins del text amb tolerància màxima (preposicions, puntuació, variacions)."""
     if not text:
         return None
-
     norm_text = normalize_text_local(text)
+    logger.debug(f"[DET_POBLE] norm_text = {norm_text}")
 
-    # Si parla de la comarca, no filtrem per poble
     if is_general_corpus(norm_text):
+        logger.debug(f"[DET_POBLE] És text general: retorna None")
         return None
 
     for p in POBLES_ADMESOS:
         p_norm = normalize_text_local(p)
-        # Patró robust: admet 'a', 'de', 'del', 'del poble de', 'sobre', 'per', etc.
         pattern = rf"(?:^|\s)(?:a|de|del|dels|al|en|poble de|del poble de|sobre|per)?\s*{p_norm}(?:[.,;:\s]|$)"
         if re.search(pattern, norm_text, re.IGNORECASE):
+            logger.debug(f"[DET_POBLE] detectat poble: {p}")
             return p
+    logger.debug(f"[DET_POBLE] cap poble trobat")
     return None
+
 
 
 
