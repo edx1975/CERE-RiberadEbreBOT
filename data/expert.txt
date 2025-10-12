@@ -1,0 +1,28 @@
+MisCEREbot — Mode expert / comandes avançades
+
+/poble NomDelPoble
+  Estableix el filtre per poble. Exemple: /poble Benissanet
+
+/tema TextTema
+  Força que la cerca se concentri en aquest tema específic. Exemple: /tema oficis musulmans
+
+/n
+  Entra en mode “cerca dins l’article” amb l’últim article seleccionat.
+
+/n23
+  Obre directament l’article amb ID 23.
+
+/id 21
+  Obre l’article amb ID 21 en mode article.
+
+/tot
+  En mode article, mostra el document complet fragmentat.
+
+/mes
+  En mode article, mostra la següent pàgina del document.
+
+/cerca
+  Surt del mode article i torna a cercar en l’arxiu general.
+
+/creua A B
+  Comparació / síntesi entre articles A i B amb punts comuns i contrastos.

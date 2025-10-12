@@ -1,0 +1,24 @@
+MisCEREbot — Ajuda bàsica
+
+Disposo d’un arxiu resumit d’alguns llibres de la Miscel·lània del CERE de la Ribera d’Ebre.  
+Actualment tinc documents de Miravet, Rasquera, Tivissa, Ginestar i Benissanet, i també de la comarca en general.
+
+Modes de cerca del BOT:
+
+• Mode cerca general  
+  Escriu un tema o paraules clau (ex: “musulmans”, “riu Ebre”).  
+  El bot et retornarà resultats rellevants.
+
+• Mode Llista  
+  Si dius “fes una llista de …” o “enumera …”, veuràs una llista de títols amb /ID per obrir-los.
+
+• Mode cerca article  
+  Quan activis /n o /id N, el bot fixarà un article i les consultes es faran només dins d’aquest text.  
+  /tot → mostra l’article sencer, paginat  
+  /cerca → torna al mode general
+
+• Mode creua (avançat, pendent)  
+  /creua 12 23 → generarà un resum combinat dels articles 12 i 23.
+  
+• Ajuda avançada
+  /expert
