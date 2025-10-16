@@ -1569,6 +1569,19 @@ def parse_query_with_ai(text: str) -> Dict[str, Any]:
     Usa IA per analitzar la consulta i extreure tema, location i mode nets.
     Retorna: {tema: [list], location: str, mode: str, is_conversa: bool}
     """
+    # Detecció ràpida de salutacions abans de processar amb IA
+    resposta_conv = detectar_conversa(text)
+    if resposta_conv:
+        logger.info(f"[AI-PARSE] Salutació detectada ràpidament: '{text}'")
+        return {
+            "tema": [],
+            "location": "tots", 
+            "mode": "conversa",
+            "is_conversa": True,
+            "is_ambiguous": False,
+            "resposta_conversa": resposta_conv
+        }
+    
     if not OPENAI.api_key:
         # Fallback sense IA - usa lògica actual
         return _parse_query_fallback(text)
@@ -1603,7 +1616,10 @@ Exemples:
 - "castell ribera d'ebre" → tema: ["castell"], location: "tots", mode: "cerca"
 - "amplia tema ibers" → tema: ["ibers"], location: "tots", mode: "amplia"
 - "llista castells" → tema: ["castells"], location: "tots", mode: "llista"
+- "hola" → tema: [], location: "tots", mode: "conversa", is_conversa: true
 - "hola com estàs" → tema: [], location: "tots", mode: "conversa", is_conversa: true
+- "bon dia" → tema: [], location: "tots", mode: "conversa", is_conversa: true
+- "que tal" → tema: [], location: "tots", mode: "conversa", is_conversa: true
 
 Respon SOL en format JSON:
 {{"tema": ["paraula1", "paraula2"], "location": "poble_o_tots", "mode": "mode", "is_conversa": true/false}}"""
@@ -1654,13 +1670,19 @@ Respon SOL en format JSON:
             # Detecta ambigüitats
             is_ambiguous = _detect_ambiguity(text, tema, location, mode)
             
+            # Si és una conversa, obtenim la resposta directa
+            resposta_conversa = None
+            if is_conversa or mode == "conversa":
+                resposta_conversa = detectar_conversa(text)
+            
             logger.info(f"[AI-PARSE] '{text}' → tema={tema}, location={location}, mode={mode}, conversa={is_conversa}, ambiguous={is_ambiguous}")
             return {
                 "tema": tema,
                 "location": location,
                 "mode": mode,
                 "is_conversa": is_conversa,
-                "is_ambiguous": is_ambiguous
+                "is_ambiguous": is_ambiguous,
+                "resposta_conversa": resposta_conversa
             }
             
         except json.JSONDecodeError as e:
@@ -1856,20 +1878,24 @@ def _parse_query_fallback(text: str) -> Dict[str, Any]:
 def detectar_conversa(text: str) -> Optional[str]:
     """
     Detecta si el text és una salutació o expressió de conversa casual.
-    Retorna una resposta amable o None si no n’hi ha.
+    Retorna una resposta amable o None si no n'hi ha.
     """
-    t = normalize_text_local(text.lower())
+    t = text.lower().strip()
 
-    # 👋 Salutacions
-    if any(x in t for x in ["hola", "ei", "bones", "bon dia", "bona tarda", "bona nit", "que tal", "què tal", "com va"]):
-        resposta = random.choice([
-            "Hola! 😊 Com va tot per la Ribera?",
-            "Bon dia! ☀️ Què et puc explicar avui?",
-            "Bones! 👋 Tens algun tema o poble al cap?",
-            "Ei! 😄 Encantat de saludar-te.",
-        ])
-        logger.debug(f"[CONVERSA] Salutació detectada → {resposta}")
-        return resposta
+    # 👋 Salutacions simples (detectió ràpida)
+    salutacions_simples = ["hola", "ei", "bones", "bon dia", "bona tarda", "bona nit", "que tal", "què tal", "com va", "hey", "hi"]
+    
+    # Detecta salutacions exactes o que comencen amb salutació
+    for salutacio in salutacions_simples:
+        if t == salutacio or t.startswith(salutacio + " ") or t.startswith(salutacio + "!"):
+            resposta = random.choice([
+                "Hola! 😊 Com va tot per la Ribera?",
+                "Bon dia! ☀️ Què et puc explicar avui?",
+                "Bones! 👋 Tens algun tema o poble al cap?",
+                "Ei! 😄 Encantat de saludar-te.",
+            ])
+            logger.info(f"[CONVERSA] Salutació detectada ràpidament: '{text}' → {resposta}")
+            return resposta
 
     # 👋 Comiats
     if any(x in t for x in ["adeu", "adéu", "fins després", "fins aviat", "ens veiem"]):
