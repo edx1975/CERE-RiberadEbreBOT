@@ -67,3 +67,12 @@ old2/
 # data/cache_embeddings.json
 # data/embeddings_*.npy
 # data/faiss_index_*.index
+
+# Fitxers específics que no calen a GitHub
+ajuda.md
+bot.log
+conversations.log
+logs.txt
+misCEREbot_old.py
+old/
+old2/
