@@ -32,6 +32,8 @@ load_dotenv()
 # Telegram imports
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 # Config logs: molt verbós per debug fi
 logging.basicConfig(
@@ -2475,15 +2477,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(update, part)
 
 #---------------------------------------------------------------
+#--------CAPÇALERA: HEALTHCHECK WEB SERVER ---------------------
+#---------------------------------------------------------------
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'MisCEREbot is running!')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def start_health_server():
+    """Inicia servidor web simple per healthcheck de Railway."""
+    try:
+        server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+        logger.info("[HEALTH] Servidor web iniciat al port 8080")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"[HEALTH] Error servidor web: {e}")
+
+#---------------------------------------------------------------
 #--------CAPÇALERA: MAIN ---------------------------------------
 #---------------------------------------------------------------
 def main():
     """Arrenca el bot i carrega tots els components."""
     logger.info("[MAIN] Iniciant MisCEREbot...")
+    
+    # Validació de variables d'entorn
+    if not TELEGRAM_TOKEN:
+        logger.error("[MAIN] ❌ TELEGRAM_TOKEN no configurat!")
+        print("❌ ERROR: TELEGRAM_TOKEN no configurat. Configura la variable d'entorn.")
+        return
+    
+    if not OPENAI_API_KEY:
+        logger.warning("[MAIN] ⚠️ OPENAI_API_KEY no configurat - mode fallback")
+        print("⚠️ AVÍS: OPENAI_API_KEY no configurat - funcionalitat limitada")
 
     # Inicialitza aplicació de Telegram
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    register_handlers(app)
+    try:
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+        register_handlers(app)
+        logger.info("[MAIN] ✅ Aplicació Telegram inicialitzada correctament")
+    except Exception as e:
+        logger.error(f"[MAIN] ❌ Error inicialitzant Telegram: {e}")
+        print(f"❌ Error inicialitzant Telegram: {e}")
+        return
+
+    # Inicia servidor web per healthcheck en thread separat
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+    logger.info("[MAIN] ✅ Servidor healthcheck iniciat")
 
     # Missatge de log per control intern
     logger.info("🤖 MisCEREbot llest i esperant missatges...")
@@ -2495,6 +2541,7 @@ def main():
     except Exception as e:
         logger.error(f"[MAIN] Error en run_polling: {e}")
         print(f"❌ Error en execució: {e}")
+        raise
 
 #---------------------------------------------------------------
 #--------CAPÇALERA: EXECUCIÓ DIRECTA ---------------------------
