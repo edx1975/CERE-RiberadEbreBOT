@@ -18,6 +18,8 @@ import json
 import time
 import faiss
 import asyncio
+import signal
+import sys
 
 import logging
 import unicodedata
@@ -2568,6 +2570,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(update, part)
 
 #---------------------------------------------------------------
+#--------CAPÇALERA: MONITORING I DIAGNÒSTIC --------------------
+#---------------------------------------------------------------
+def get_system_metrics():
+    """Obté mètriques del sistema per monitoring."""
+    try:
+        import psutil
+        return {
+            "memory_percent": psutil.virtual_memory().percent,
+            "memory_available_mb": round(psutil.virtual_memory().available / 1024 / 1024, 1),
+            "cpu_percent": psutil.cpu_percent(interval=1),
+            "disk_percent": psutil.disk_usage('/').percent,
+            "process_count": len(psutil.pids())
+        }
+    except ImportError:
+        return {"error": "psutil no disponible"}
+    except Exception as e:
+        return {"error": str(e)}
+
+def log_system_status():
+    """Registra l'estat del sistema."""
+    metrics = get_system_metrics()
+    logger.info(f"[SYSTEM] Memòria: {metrics.get('memory_percent', 'N/A')}%, "
+                f"CPU: {metrics.get('cpu_percent', 'N/A')}%, "
+                f"Processos: {metrics.get('process_count', 'N/A')}")
+
+def setup_signal_handlers():
+    """Configura handlers per senyals del sistema."""
+    def signal_handler(signum, frame):
+        logger.info(f"[SYSTEM] Rebut senyal {signum} - aturant bot...")
+        print(f"🛑 Rebut senyal {signum} - aturant bot...")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    logger.info("[SYSTEM] Handlers de senyals configurats")
+
+#---------------------------------------------------------------
 #--------CAPÇALERA: HEALTHCHECK WEB SERVER ---------------------
 #---------------------------------------------------------------
 class HealthHandler(BaseHTTPRequestHandler):
@@ -2578,14 +2617,17 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             
             # Check system status
+            system_metrics = get_system_metrics()
             status = {
                 "status": "healthy",
                 "service": "MisCEREbot",
                 "timestamp": time.time(),
+                "uptime_seconds": time.time() - start_time if 'start_time' in globals() else 0,
                 "openai_available": OPENAI.api_key is not None,
                 "circuit_breaker_state": OPENAI.circuit_breaker.state if hasattr(OPENAI, 'circuit_breaker') else "unknown",
                 "sessions_active": len(sessions.sessions) if hasattr(sessions, 'sessions') else 0,
-                "cache_size": len(EMB_CACHE) if 'EMB_CACHE' in globals() else 0
+                "cache_size": len(EMB_CACHE) if 'EMB_CACHE' in globals() else 0,
+                "system_metrics": system_metrics
             }
             
             response = json.dumps(status, indent=2)
@@ -2613,7 +2655,17 @@ def start_health_server():
 #---------------------------------------------------------------
 def main():
     """Arrenca el bot i carrega tots els components."""
+    global start_time
+    start_time = time.time()
+    
     logger.info("[MAIN] Iniciant MisCEREbot...")
+    print("🚀 Iniciant MisCEREbot...")
+    
+    # Configura handlers de senyals
+    setup_signal_handlers()
+    
+    # Log estat inicial del sistema
+    log_system_status()
     
     # Validació de variables d'entorn
     if not TELEGRAM_TOKEN:
@@ -2643,6 +2695,20 @@ def main():
     # Missatge de log per control intern
     logger.info("🤖 MisCEREbot llest i esperant missatges...")
     print("✅ MisCEREbot en funcionament. Esperant missatges a Telegram...")
+    
+    # Log estat final del sistema
+    log_system_status()
+    
+    # Programa logging periòdic del sistema cada 5 minuts
+    def periodic_logging():
+        while True:
+            time.sleep(300)  # 5 minuts
+            log_system_status()
+    
+    import threading
+    logging_thread = threading.Thread(target=periodic_logging, daemon=True)
+    logging_thread.start()
+    logger.info("[MAIN] Thread de logging periòdic iniciat")
 
     # Error handler per conflictes de Telegram
     async def error_handler(update, context):

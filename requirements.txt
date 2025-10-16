@@ -34,6 +34,9 @@ scikit-learn>=1.3.0
 # Cerca difusa
 rapidfuzz>=3.0.0
 
+# Monitoring del sistema
+psutil>=5.9.0
+
 # Dependències addicionals per Railway
 setuptools>=65.0.0
 wheel>=0.40.0
