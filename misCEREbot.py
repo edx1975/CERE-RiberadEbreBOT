@@ -1573,8 +1573,11 @@ def parse_query_with_ai(text: str) -> Dict[str, Any]:
         # Fallback sense IA - usa lògica actual
         return _parse_query_fallback(text)
     
-    try:
-        prompt = f"""Analitza aquesta consulta d'usuari i extreu la informació estructurada:
+    # Retry logic per respostes buides o malformades
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            prompt = f"""Analitza aquesta consulta d'usuari i extreu la informació estructurada:
 
 CONSULTA: "{text}"
 
@@ -1605,45 +1608,80 @@ Exemples:
 Respon SOL en format JSON:
 {{"tema": ["paraula1", "paraula2"], "location": "poble_o_tots", "mode": "mode", "is_conversa": true/false}}"""
 
-        response = OPENAI.chat(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=200
-        ).strip()
-        
-        # Parseja la resposta JSON
-        import json
-        result = json.loads(response)
-        
-        # Valida i neteja
-        tema = result.get("tema", [])
-        if not isinstance(tema, list):
-            tema = []
-        tema = [t.strip().lower() for t in tema if t.strip()]
-        
-        location = result.get("location", "tots").strip().lower()
-        if location in ["ribera d'ebre", "ribera", "comarca", "tota la comarca"]:
-            location = "tots"
-        
-        mode = result.get("mode", "cerca").strip().lower()
-        is_conversa = result.get("is_conversa", False)
-        
-        # Detecta ambigüitats
-        is_ambiguous = _detect_ambiguity(text, tema, location, mode)
-        
-        logger.info(f"[AI-PARSE] '{text}' → tema={tema}, location={location}, mode={mode}, conversa={is_conversa}, ambiguous={is_ambiguous}")
-        return {
-            "tema": tema,
-            "location": location,
-            "mode": mode,
-            "is_conversa": is_conversa,
-            "is_ambiguous": is_ambiguous
-        }
-        
-    except Exception as e:
-        logger.warning(f"[AI-PARSE] Error: {e}, usant fallback")
-        return _parse_query_fallback(text)
+            response = OPENAI.chat(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=200
+            ).strip()
+            
+            # Verifica si la resposta està buida
+            if not response or response.isspace():
+                logger.warning(f"[AI-PARSE] Resposta buida (intento {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(1)  # Espera 1 segon abans de reintentar
+                    continue
+                else:
+                    logger.warning("[AI-PARSE] Resposta buida després de tots els intents, usant fallback")
+                    return _parse_query_fallback(text)
+            
+            # Parseja la resposta JSON
+            import json
+            result = json.loads(response)
+            
+            # Valida que el resultat tingui la estructura esperada
+            if not isinstance(result, dict):
+                logger.warning(f"[AI-PARSE] Resposta no és dict (intento {attempt + 1}/{max_retries}): {type(result)}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                else:
+                    return _parse_query_fallback(text)
+            
+            # Valida i neteja
+            tema = result.get("tema", [])
+            if not isinstance(tema, list):
+                tema = []
+            tema = [t.strip().lower() for t in tema if t.strip()]
+            
+            location = result.get("location", "tots").strip().lower()
+            if location in ["ribera d'ebre", "ribera", "comarca", "tota la comarca"]:
+                location = "tots"
+            
+            mode = result.get("mode", "cerca").strip().lower()
+            is_conversa = result.get("is_conversa", False)
+            
+            # Detecta ambigüitats
+            is_ambiguous = _detect_ambiguity(text, tema, location, mode)
+            
+            logger.info(f"[AI-PARSE] '{text}' → tema={tema}, location={location}, mode={mode}, conversa={is_conversa}, ambiguous={is_ambiguous}")
+            return {
+                "tema": tema,
+                "location": location,
+                "mode": mode,
+                "is_conversa": is_conversa,
+                "is_ambiguous": is_ambiguous
+            }
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"[AI-PARSE] Error JSON (intento {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            else:
+                logger.warning("[AI-PARSE] Error JSON després de tots els intents, usant fallback")
+                return _parse_query_fallback(text)
+        except Exception as e:
+            logger.warning(f"[AI-PARSE] Error general (intento {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            else:
+                logger.warning("[AI-PARSE] Error general després de tots els intents, usant fallback")
+                return _parse_query_fallback(text)
+    
+    # Si arriba aquí, tots els intents han fallat
+    return _parse_query_fallback(text)
 
 def _handle_ambiguous_query(text: str, tema_list: list, location: str, mode: str) -> str:
     """
@@ -1785,8 +1823,9 @@ def _parse_query_fallback(text: str) -> Dict[str, Any]:
     text_net = neteja_consulta(text)
     
     # Detecta conversa
-    if detectar_conversa(text):
-        return {"tema": [], "location": "tots", "mode": "conversa", "is_conversa": True}
+    resposta_conv = detectar_conversa(text)
+    if resposta_conv:
+        return {"tema": [], "location": "tots", "mode": "conversa", "is_conversa": True, "resposta_conversa": resposta_conv}
     
     # Neteja agressiva
     tema_net = re.sub(r'\b(parlam|parlem|parla|parle|dels|del|de la|de les|de l\'|a la|a les|a l\'|sobre|de|d\'|en|a|al|als)\b', ' ', text_net, flags=re.IGNORECASE)
@@ -1900,6 +1939,7 @@ def handle_text(uid: int, text: str):
     mode = parsed["mode"]
     is_conversa = parsed["is_conversa"]
     is_ambiguous = parsed.get("is_ambiguous", False)
+    resposta_conversa = parsed.get("resposta_conversa", None)
     
     # 🤔 Gestiona ambigüitats
     if is_ambiguous:
@@ -1907,6 +1947,12 @@ def handle_text(uid: int, text: str):
     
     # 🗣️ Gestiona conversa si cal
     if is_conversa or mode == "conversa":
+        # Si ja tenim una resposta de conversa del parsing, l'usem
+        if resposta_conversa:
+            logger.debug(f"[HANDLE] Mode conversa activat → resposta del parsing enviada.")
+            return resposta_conversa
+        
+        # Sinó, detectem-la ara
         resposta_conv = detectar_conversa(text)
         if resposta_conv:
             logger.debug(f"[HANDLE] Mode conversa activat → resposta curta enviada.")
