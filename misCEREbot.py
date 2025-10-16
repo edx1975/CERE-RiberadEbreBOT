@@ -627,7 +627,7 @@ def _weight_candidate(doc: Doc,
 
         # 1) Coincidència literal/paraules clau al títol
         if tema_low and tema_low in title_low:
-            weight *= 3.0
+            weight *= 2.0
         else:
             # Coincidències exactes de paraules (no substrings)
             words = tema_low.split()
@@ -637,9 +637,9 @@ def _weight_candidate(doc: Doc,
                     # Coincidència exacta (no substring)
                     if re.search(r'\b' + re.escape(w) + r'\b', title_low):
                         exact_matches += 1
-                        weight *= 1.5
+                        weight *= 1.3
                     elif w in title_low:  # Substring com a fallback
-                        weight *= 1.2
+                        weight *= 1.1
             if exact_matches == 0:
                 # Si no hi ha coincidències exactes, penalitza lleugerament
                 weight *= 0.8
