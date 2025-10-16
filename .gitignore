@@ -28,7 +28,7 @@ ENV/
 env.bak/
 venv.bak/
 
-# Environment variables
+# Environment variables (IMPORTANT: No pujar secrets a GitHub)
 .env
 .env.local
 .env.development.local
