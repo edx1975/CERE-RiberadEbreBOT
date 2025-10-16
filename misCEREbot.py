@@ -333,57 +333,141 @@ if EMB_CACHE_PATH.exists():
 else:
     EMB_CACHE = {}
 
+"""Circuit breaker per gestionar fallades d'API."""
+class CircuitBreaker:
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+    
+    def can_execute(self) -> bool:
+        if self.state == "CLOSED":
+            return True
+        elif self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                logger.info("[CIRCUIT] Passant a estat HALF_OPEN")
+                return True
+            return False
+        else:  # HALF_OPEN
+            return True
+    
+    def on_success(self):
+        self.failure_count = 0
+        self.state = "CLOSED"
+        logger.debug("[CIRCUIT] Reset a estat CLOSED")
+    
+    def on_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        
+        if self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
+            logger.warning(f"[CIRCUIT] Obert després de {self.failure_count} fallades consecutives")
+
 """OpenAI opcional amb capa de compatibilitat (legacy i client 1.x)."""
 class OpenAIAdapter:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.client = None
         self.legacy = None
+        self.max_retries = 3
+        self.base_delay = 1.0
+        self.max_delay = 60.0
+        self.timeout = 30.0
+        self.circuit_breaker = CircuitBreaker()
+        
         if not api_key:
             return
         try:
             # Try new 1.x client
             from openai import OpenAI  # type: ignore
-            self.client = OpenAI(api_key=api_key)
+            self.client = OpenAI(
+                api_key=api_key,
+                timeout=self.timeout
+            )
             logger.info("[OPENAI] Client 1.x carregat.")
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[OPENAI] Error carregant client 1.x: {e}")
             try:
                 # Fallback legacy
                 import openai  # type: ignore
                 openai.api_key = api_key
                 self.legacy = openai
                 logger.info("[OPENAI] SDK legacy carregat.")
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[OPENAI] Error carregant legacy: {e}")
                 logger.info("[OPENAI] No disponible. Mode local.")
+
+    def _retry_with_backoff(self, func, *args, **kwargs):
+        """Retry function with exponential backoff and circuit breaker."""
+        # Check circuit breaker first
+        if not self.circuit_breaker.can_execute():
+            logger.warning("[OPENAI] Circuit breaker obert - saltant crida API")
+            raise RuntimeError("Circuit breaker obert - API temporalment no disponible")
+        
+        last_exception = None
+        
+        for attempt in range(self.max_retries):
+            try:
+                result = func(*args, **kwargs)
+                self.circuit_breaker.on_success()
+                logger.debug(f"[OPENAI] Crida exitosa (intento {attempt + 1})")
+                return result
+            except Exception as e:
+                last_exception = e
+                self.circuit_breaker.on_failure()
+                
+                # Log detailed error information
+                error_type = type(e).__name__
+                error_msg = str(e)
+                logger.warning(f"[OPENAI] Intento {attempt + 1} fallat: {error_type}: {error_msg}")
+                
+                if attempt < self.max_retries - 1:
+                    delay = min(self.base_delay * (2 ** attempt), self.max_delay)
+                    logger.warning(f"[OPENAI] Reintentant en {delay:.1f}s...")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"[OPENAI] Tots els intents fallats després de {self.max_retries} intents. Darrer error: {error_type}: {error_msg}")
+        
+        raise last_exception
 
     def embed(self, model: str, text: str):
         if self.client is not None:
-            resp = self.client.embeddings.create(model=model, input=text)
-            return resp.data[0].embedding
+            def _embed():
+                resp = self.client.embeddings.create(model=model, input=text)
+                return resp.data[0].embedding
+            return self._retry_with_backoff(_embed)
         if self.legacy is not None:
-            # legacy: openai.Embedding.create
-            resp = self.legacy.Embedding.create(model=model, input=text)
-            return resp["data"][0]["embedding"]
+            def _embed_legacy():
+                resp = self.legacy.Embedding.create(model=model, input=text)
+                return resp["data"][0]["embedding"]
+            return self._retry_with_backoff(_embed_legacy)
         raise RuntimeError("OpenAI no disponible")
 
     def chat(self, model: str, messages: list, temperature: float, max_tokens: int):
         if self.client is not None:
-            resp = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            return resp.choices[0].message.content
+            def _chat():
+                resp = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return resp.choices[0].message.content
+            return self._retry_with_backoff(_chat)
         if self.legacy is not None:
-            # legacy: openai.ChatCompletion.create
-            resp = self.legacy.ChatCompletion.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            return resp["choices"][0]["message"]["content"]
+            def _chat_legacy():
+                resp = self.legacy.ChatCompletion.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return resp["choices"][0]["message"]["content"]
+            return self._retry_with_backoff(_chat_legacy)
         raise RuntimeError("OpenAI no disponible")
 
 OPENAI = OpenAIAdapter(OPENAI_API_KEY)
@@ -1302,7 +1386,14 @@ def sintetitza_tema(tema: str,
         else:
             raise RuntimeError("IA no disponible")
     except Exception as e:
-        logger.warning(f"[SINTESI] Fallback local: {e}")
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logger.warning(f"[SINTESI] Fallback local: {error_type}: {error_msg}")
+        
+        # Log additional context for debugging
+        logger.debug(f"[SINTESI] Context length: {len(context_text)} chars")
+        logger.debug(f"[SINTESI] Topic: {tema}, Humor mode: {humor_mode}, Expand mode: {expand_mode}")
+        
         # Fallback: pega coherent trencada en 2-3 paràgrafs curtets
         paras = re.split(r'(?<=[.!?])\s+', context_text)
         base = " ".join(paras[:6])[:1200]
@@ -1310,7 +1401,7 @@ def sintetitza_tema(tema: str,
         return (
             f"**{tema.title()}** — síntesi preliminar (mode local)\n\n"
             f"{base}\n\n"
-            f"(Aquest text s'ha generat sense IA externa per una incidència temporal.)"
+            f"(Aquest text s'ha generat sense IA externa per una incidència temporal: {error_type})"
         )
 
 #---------------------------------------------------------------
@@ -2483,9 +2574,27 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/':
             self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            
+            # Check system status
+            status = {
+                "status": "healthy",
+                "service": "MisCEREbot",
+                "timestamp": time.time(),
+                "openai_available": OPENAI.api_key is not None,
+                "circuit_breaker_state": OPENAI.circuit_breaker.state if hasattr(OPENAI, 'circuit_breaker') else "unknown",
+                "sessions_active": len(sessions.sessions) if hasattr(sessions, 'sessions') else 0,
+                "cache_size": len(EMB_CACHE) if 'EMB_CACHE' in globals() else 0
+            }
+            
+            response = json.dumps(status, indent=2)
+            self.wfile.write(response.encode('utf-8'))
+        elif self.path == '/health':
+            self.send_response(200)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
-            self.wfile.write(b'MisCEREbot is running!')
+            self.wfile.write(b'OK')
         else:
             self.send_response(404)
             self.end_headers()
