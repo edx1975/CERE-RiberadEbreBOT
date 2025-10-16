@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-misCEREbot.py – v4 (Ribas Edition)
+misCEREbot.py – v4.1 (Ribas Edition - Railway Compatible)
 - FAISS + embeddings (OpenAI si disponible; fallback local)
 - Tema net i correccions toponímiques
 - Filtre suau per poble
