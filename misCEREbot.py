@@ -20,6 +20,7 @@ import faiss
 import asyncio
 import signal
 import sys
+import threading
 
 import logging
 import unicodedata
@@ -2705,7 +2706,6 @@ def main():
             time.sleep(300)  # 5 minuts
             log_system_status()
     
-    import threading
     logging_thread = threading.Thread(target=periodic_logging, daemon=True)
     logging_thread.start()
     logger.info("[MAIN] Thread de logging periòdic iniciat")
