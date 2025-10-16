@@ -81,3 +81,7 @@ logs.txt
 misCEREbot_old.py
 old/
 old2/
+
+# Fitxers de Railway
+.railway/
+railway.log

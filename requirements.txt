@@ -1,11 +1,39 @@
-PyMuPDF==1.26.4
-langdetect==1.0.9
-jsonlines==3.1.0
-sumy==0.9.0
-faiss-cpu==1.10.0
-numpy==1.25.2
-python-telegram-bot==20.7
-openai==1.2.3
-python-dotenv==1.0.1
-scikit-learn==1.3.2
-rapidfuzz==3.9.7
+# MisCEREbot - Dependències Python 3.13
+# Versions compatibles amb Railway i Python 3.13
+
+# Processament de PDFs
+PyMuPDF>=1.23.0
+
+# Detecció d'idioma
+langdetect>=1.0.9
+
+# Processament JSON
+jsonlines>=3.1.0
+
+# Resum de text
+sumy>=0.10.0
+
+# Cerca vectorial FAISS
+faiss-cpu>=1.7.0
+
+# Computació numèrica
+numpy>=1.24.0
+
+# Bot de Telegram
+python-telegram-bot>=20.0
+
+# API OpenAI
+openai>=1.0.0
+
+# Variables d'entorn
+python-dotenv>=1.0.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+
+# Cerca difusa
+rapidfuzz>=3.0.0
+
+# Dependències addicionals per Railway
+setuptools>=65.0.0
+wheel>=0.40.0
