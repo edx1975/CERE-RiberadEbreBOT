@@ -68,6 +68,11 @@ old2/
 # data/embeddings_*.npy
 # data/faiss_index_*.index
 
+# Fitxers de dades duplicats o innecessaris
+data/embeddings_G_pro_large.npy
+data/faiss_index_G_pro_large.index
+data/cache_embeddings.json
+
 # Fitxers específics que no calen a GitHub
 ajuda.md
 bot.log
