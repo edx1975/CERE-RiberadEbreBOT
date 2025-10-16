@@ -564,7 +564,7 @@ def embed_query(tema: str) -> np.ndarray:
     v = None
     if OPENAI.api_key:
         try:
-            emb_vec = OPENAI.embed(model="text-embedding-3-large", text=query_text)
+            emb_vec = OPENAI.embed(model="text-embedding-3-small", text=query_text)
             v = np.array(emb_vec, dtype=np.float32)
             v /= np.maximum(np.linalg.norm(v), 1e-9)
             logger.info(f"[EMBED] OpenAI creat ({v.shape[0]}D) per '{tema}'")
