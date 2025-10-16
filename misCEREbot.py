@@ -2645,6 +2645,27 @@ def main():
     print("✅ MisCEREbot en funcionament. Esperant missatges a Telegram...")
 
     # Executa el polling amb control d'errors
+    # Error handler per conflictes de Telegram
+    async def error_handler(update, context):
+        """Gestiona errors de l'aplicació."""
+        error = context.error
+        logger.error(f"[ERROR] {type(error).__name__}: {error}")
+        
+        if "Conflict" in str(error) and "getUpdates" in str(error):
+            logger.warning("[ERROR] Conflicte de Telegram detectat - probablement múltiples instàncies")
+            logger.info("[ERROR] Esperant 30 segons abans de reintentar...")
+            await asyncio.sleep(30)
+            return
+        
+        # Altres errors
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "❌ S'ha produït un error. Torna-ho a provar en uns moments."
+            )
+    
+    # Afegeix l'error handler
+    app.add_error_handler(error_handler)
+    
     try:
         app.run_polling()
     except Exception as e:
