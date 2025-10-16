@@ -2826,5 +2826,80 @@ def main():
 #---------------------------------------------------------------
 #--------CAPÇALERA: EXECUCIÓ DIRECTA ---------------------------
 #---------------------------------------------------------------
+def regenerate_index_3072():
+    """Regenera l'índex FAISS amb embeddings de 3072 dimensions."""
+    print("🔄 Regenerant índex FAISS amb embeddings de 3072 dimensions...")
+    
+    # Carrega documents
+    print("📚 Carregant documents...")
+    docs = []
+    with open(METADATA_PATH, 'r', encoding='utf-8') as f:
+        for line in f:
+            docs.append(json.loads(line.strip()))
+    
+    print(f"✅ Carregats {len(docs)} documents")
+    
+    # Carrega embeddings existents
+    print("🧮 Carregant embeddings existents...")
+    if EMB_PATH.exists():
+        embeddings = np.load(EMB_PATH)
+        print(f"✅ Carregats embeddings: {embeddings.shape}")
+    else:
+        print("❌ No s'han trobat embeddings. Generant-los...")
+        # Genera embeddings amb OpenAI
+        embeddings = []
+        for i, doc in enumerate(docs):
+            if i % 10 == 0:
+                print(f"   Processant document {i+1}/{len(docs)}...")
+            
+            # Crea text per embedding
+            text_parts = []
+            if doc.get('title'):
+                text_parts.append(doc['title'])
+            if doc.get('summary'):
+                text_parts.append(doc['summary'])
+            if doc.get('topics'):
+                text_parts.extend(doc['topics'])
+            
+            text = ' '.join(text_parts)
+            
+            # Genera embedding
+            try:
+                emb = OPENAI.embed(model="text-embedding-3-large", text=text)
+                embeddings.append(emb)
+            except Exception as e:
+                print(f"⚠️  Error generant embedding per doc {i}: {e}")
+                # Usa embedding zero com a fallback
+                embeddings.append(np.zeros(3072, dtype=np.float32))
+        
+        # Converteix a array numpy
+        embeddings = np.array(embeddings, dtype=np.float32)
+        print(f"✅ Generats {embeddings.shape[0]} embeddings de {embeddings.shape[1]} dimensions")
+        
+        # Guarda embeddings
+        print("💾 Guardant embeddings...")
+        np.save(EMB_PATH, embeddings)
+    
+    # Crea nou índex FAISS
+    print("🔍 Creant índex FAISS...")
+    vector_index = faiss.IndexFlatIP(embeddings.shape[1])  # 3072 dimensions
+    
+    # Normalitza embeddings
+    emb_norm = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-9)
+    
+    # Afegeix embeddings a l'índex
+    vector_index.add(emb_norm)
+    
+    # Guarda l'índex
+    print("💾 Guardant índex FAISS...")
+    faiss.write_index(vector_index, str(FAISS_INDEX_PATH))
+    
+    print(f"✅ Índex FAISS regenerat amb {vector_index.ntotal} vectors de {embeddings.shape[1]} dimensions")
+    print(f"📁 Guardat a: {FAISS_INDEX_PATH}")
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "regenerate":
+        regenerate_index_3072()
+    else:
+        main()
