@@ -2644,20 +2644,13 @@ def main():
     logger.info("🤖 MisCEREbot llest i esperant missatges...")
     print("✅ MisCEREbot en funcionament. Esperant missatges a Telegram...")
 
-    # Executa el polling amb control d'errors
     # Error handler per conflictes de Telegram
     async def error_handler(update, context):
         """Gestiona errors de l'aplicació."""
         error = context.error
         logger.error(f"[ERROR] {type(error).__name__}: {error}")
         
-        if "Conflict" in str(error) and "getUpdates" in str(error):
-            logger.warning("[ERROR] Conflicte de Telegram detectat - probablement múltiples instàncies")
-            logger.info("[ERROR] Esperant 30 segons abans de reintentar...")
-            await asyncio.sleep(30)
-            return
-        
-        # Altres errors
+        # Altres errors (no conflictes)
         if update and update.effective_message:
             await update.effective_message.reply_text(
                 "❌ S'ha produït un error. Torna-ho a provar en uns moments."
@@ -2666,12 +2659,31 @@ def main():
     # Afegeix l'error handler
     app.add_error_handler(error_handler)
     
-    try:
-        app.run_polling()
-    except Exception as e:
-        logger.error(f"[MAIN] Error en run_polling: {e}")
-        print(f"❌ Error en execució: {e}")
-        raise
+    # Executa el polling amb reintent intel·ligent per conflictes
+    max_retries = 5
+    retry_delay = 30
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"[MAIN] Intento de connexió {attempt + 1}/{max_retries}")
+            app.run_polling()
+            break  # Si arriba aquí, la connexió ha estat exitosa
+        except Exception as e:
+            error_msg = str(e)
+            if "Conflict" in error_msg and "getUpdates" in error_msg:
+                if attempt < max_retries - 1:
+                    logger.warning(f"[MAIN] Conflicte de Telegram detectat (intento {attempt + 1})")
+                    logger.info(f"[MAIN] Esperant {retry_delay} segons abans de reintentar...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Dobla el temps d'espera cada vegada
+                else:
+                    logger.error(f"[MAIN] Màxim d'intents assolit. Error persistent: {e}")
+                    print(f"❌ Error persistent de Telegram després de {max_retries} intents")
+                    raise
+            else:
+                logger.error(f"[MAIN] Error no relacionat amb conflicte: {e}")
+                print(f"❌ Error en execució: {e}")
+                raise
 
 #---------------------------------------------------------------
 #--------CAPÇALERA: EXECUCIÓ DIRECTA ---------------------------
