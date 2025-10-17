@@ -1,24 +1,61 @@
 MisCEREbot — Ajuda bàsica
 
-Disposo d’un arxiu resumit d’alguns llibres de la Miscel·lània del CERE de la Ribera d’Ebre.  
+Disposo d'un arxiu resumit d'alguns llibres de la Miscel·lània del CERE de la Ribera d'Ebre.  
 Actualment tinc documents de Miravet, Rasquera, Tivissa, Ginestar i Benissanet, i també de la comarca en general.
 
-Modes de cerca del BOT:
+COMANDES BÀSIQUES:
+/start — Inicia el bot
+/ajuda — Mostra aquesta ajuda
+/expert — Ajuda avançada amb totes les comandes
+
+MODES DE CERCA:
 
 • Mode cerca general  
-  Escriu un tema o paraules clau (ex: “musulmans”, “riu Ebre”).  
-  El bot et retornarà resultats rellevants.
+  Escriu un tema o paraules clau (ex: "musulmans", "riu Ebre").  
+  El bot et retornarà resultats rellevants amb síntesi intel·ligent.
 
 • Mode Llista  
-  Si dius “fes una llista de …” o “enumera …”, veuràs una llista de títols amb /ID per obrir-los.
+  Si dius "fes una llista de …" o "enumera …", veuràs una llista de títols amb /ID per obrir-los.
+  També pots usar: /llista tema
+  Exemples: "llista castells", "llista cognoms de ginestar"
 
-• Mode cerca article  
-  Quan activis /n o /id N, el bot fixarà un article i les consultes es faran només dins d’aquest text.  
-  /tot → mostra l’article sencer, paginat  
-  /cerca → torna al mode general
+• Mode Article  
+  Quan obris un article amb /ID, el bot entra en mode article i manté el context.
+  Pots fer preguntes sobre l'article específic i el bot respondrà contextualment.
+  Comandes: /llegir (article sencer), /mes (següent pàgina), /nou (sortir)
 
-• Mode creua (avançat, pendent)  
-  /creua 12 23 → generarà un resum combinat dels articles 12 i 23.
-  
-• Ajuda avançada
-  /expert
+• Mode Arxiu  
+  /arxiu → estadístiques generals del corpus (topics, distribució, etc.)
+  /arxiu tema → anàlisi d'importància d'un tema específic
+  /arxiu poble → estadístiques de pobles
+  També pots dir: "mostra l'arxiu", "arxiu ginestar"
+
+• Mode Creua  
+  /creua → articles relacionats i comparacions
+  /creua A B → compara dos articles específics
+  També pots dir: "compara …", "relaciona …"
+
+CERQUES NATURALS:
+Pots usar llenguatge natural per activar modes:
+• "fes una llista de castells" → mode llista
+• "mostra l'arxiu" → mode arxiu  
+• "compara castells ibers" → mode creua
+• "cerca guerra civil" → mode cerca
+• "arxiu ginestar" → arxiu d'un poble específic
+
+CERQUES TEMPORALS:
+Pots cercar per períodes històrics:
+• "castells del segle XV"
+• "guerra civil 1936-1939" 
+• "fets històrics de Ginestar dels segles XV-XVII"
+
+MODE ARTICLE CONTEXTUAL:
+Quan estàs en mode article (després d'obrir un article), pots fer preguntes directes:
+• "que escrivia la maria serres?"
+• "descriu breument 3 contes"
+• "quin és el tema principal?"
+
+El bot mantindrà el context de l'article i respondrà específicament sobre el contingut.
+
+FILTRES AUTOMÀTICS:
+El bot detecta automàticament pobles i temes en les teves consultes per millorar els resultats.
