@@ -1078,7 +1078,7 @@ def compose_list_response(tema: str, results: list, poble: Optional[str]) -> str
         if poble and poble != "tots" and poble in KNOWN_POPS:
             return f"⚠️ No hi ha articles relacionats amb '{tema}' a {poble.title()}."
         else:
-            return "⚠️ No hi ha articles relacionats amb aquest tema."
+            return "⚠️ No hi ha articles relacionats amb aquest tema"
 
     body = "\n".join(lines).strip()
     # logger.debug(f"[COMPOSE] Llista generada ({len(filtered_results)} elements)")
