@@ -55,9 +55,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
 
-METADATA_PATH = Path(os.getenv("METADATA_PATH", DATA_DIR / "corpus_original.jsonl"))
-EMB_PATH = Path(os.getenv("EMB_PATH", DATA_DIR / "embeddings_G.npy"))
-FAISS_INDEX_PATH = Path(os.getenv("FAISS_INDEX_PATH", DATA_DIR / "faiss_index_G.index"))
+METADATA_PATH = Path(os.getenv("METADATA_PATH", DATA_DIR / "corpus_ordenat_cronologic.jsonl"))
+EMB_PATH = Path(os.getenv("EMB_PATH", DATA_DIR / "embeddings_ordenat.npy"))
+FAISS_INDEX_PATH = Path(os.getenv("FAISS_INDEX_PATH", DATA_DIR / "faiss_index_ordenat.index"))
 TOPICS_PATH = Path(os.getenv("TOPICS_PATH", DATA_DIR / "topics_semantics.json"))
 EMB_CACHE_PATH = Path(os.getenv("EMB_CACHE_PATH", DATA_DIR / "cache_embeddings.json"))
 
@@ -109,6 +109,9 @@ LIST_TRIGGERS = {"llista", "mostra", "cita", "fes una llista", "enumera", "llist
 RESUME_TRIGGERS = {"resumeix", "resum", "explica", "parla", "sintetitza", "resumix"}
 RESUM_BREU_TRIGGERS = {"resum curt", "resum breu", "resum final", "conclusió curta", "en poques paraules"}
 EXPAND_TRIGGERS = {"amplia", "expandeix", "continua", "segueix", "aprofundix", "afegeix", "més info"}
+ARXIU_TRIGGERS = {"arxiu", "mostra l'arxiu", "veure arxiu", "consulta arxiu", "revisa arxiu"}
+CREUA_TRIGGERS = {"creua", "compara", "diferència", "contrasta", "relaciona", "vincula"}
+CERCA_TRIGGERS = {"cerca", "busca", "troba", "localitza", "investiga", "explora"}
 
 #---------------------------------------------------------------
 #--------CAPÇALERA: SESSIONS -----------------------------------
@@ -203,7 +206,7 @@ def neteja_consulta(text: str) -> str:
     text = re.sub(r"[^\w\s'’\-.,;:!?]", " ", text or "")
     text = re.sub(r"\s+", " ", text)
     text = text.strip()
-    logger.debug(f"[NETEJA] → '{text}'")
+    # logger.debug(f"[NETEJA] → '{text}'")
     return text
 
 def is_general_corpus(text: str) -> bool:
@@ -219,14 +222,14 @@ def detecta_poble(text: str, known_populations: Optional[List[str]] = None) -> O
     
     # Si detecta termes generals com "ribera", "comarca", etc., desactiva el filtre de poble
     if any(marker in text_norm for marker in GENERAL_MARKERS):
-        logger.debug("[POBLE] Detectat terme general (ribera/comarca) - desactivant filtre de poble")
+        # logger.debug("[POBLE] Detectat terme general (ribera/comarca) - desactivant filtre de poble")
         return None
     
     for pob in known_populations:
         if pob and pob in text_norm:
-            logger.debug(f"[POBLE] Trobat '{pob}' dins la consulta.")
+            # logger.debug(f"[POBLE] Trobat '{pob}' dins la consulta.")
             return pob
-    logger.debug("[POBLE] Cap poble detectat explícitament.")
+    # logger.debug("[POBLE] Cap poble detectat explícitament.")
     return None
 
 
@@ -265,7 +268,7 @@ with open(METADATA_PATH, "r", encoding="utf-8") as f:
         except json.JSONDecodeError as e:
             logger.warning(f"[CORPUS] Línia {i} JSON invàlid: {e}")
             continue
-        doc_id = d.get("id") if d.get("id") is not None else i
+        doc_id = d.get("idc") if d.get("idc") is not None else i
         doc = Doc(d, doc_id)
         documents.append(doc)
         id_to_doc[doc.id] = doc
@@ -360,7 +363,7 @@ class CircuitBreaker:
     def on_success(self):
         self.failure_count = 0
         self.state = "CLOSED"
-        logger.debug("[CIRCUIT] Reset a estat CLOSED")
+        # logger.debug("[CIRCUIT] Reset a estat CLOSED")
     
     def on_failure(self):
         self.failure_count += 1
@@ -417,7 +420,7 @@ class OpenAIAdapter:
             try:
                 result = func(*args, **kwargs)
                 self.circuit_breaker.on_success()
-                logger.debug(f"[OPENAI] Crida exitosa (intento {attempt + 1})")
+                # logger.debug(f"[OPENAI] Crida exitosa (intento {attempt + 1})")
                 return result
             except Exception as e:
                 last_exception = e
@@ -480,7 +483,7 @@ def _persist_cache():
         EMB_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(EMB_CACHE_PATH, "w") as f:
             json.dump(EMB_CACHE, f)
-        logger.debug(f"[CACHE] Persistida a {EMB_CACHE_PATH}")
+        # logger.debug(f"[CACHE] Persistida a {EMB_CACHE_PATH}")
     except Exception as e:
         logger.warning(f"[CACHE] No s'ha pogut persistir: {e}")
 
@@ -602,7 +605,7 @@ def _base_vector_search(q_vec: np.ndarray, top_k: int = 50) -> Tuple[np.ndarray,
             return np.array([[]], dtype=np.float32), np.array([[]], dtype=np.int64)
 
         D, I = vector_index.search(q_vec, max(top_k, 50))
-        logger.debug(f"[FAISS] Raw search → top={I.shape[1]} resultats")
+        # logger.debug(f"[FAISS] Raw search → top={I.shape[1]} resultats")
         return D, I
     except Exception as e:
         logger.error(f"[FAISS] Error cercant: {e!r} (type={type(e).__name__})")
@@ -627,7 +630,7 @@ def _weight_candidate(doc: Doc,
 
         # 1) Coincidència literal/paraules clau al títol
         if tema_low and tema_low in title_low:
-            weight *= 2.0
+            weight *= 3.0
         else:
             # Coincidències exactes de paraules (no substrings)
             words = tema_low.split()
@@ -637,9 +640,9 @@ def _weight_candidate(doc: Doc,
                     # Coincidència exacta (no substring)
                     if re.search(r'\b' + re.escape(w) + r'\b', title_low):
                         exact_matches += 1
-                        weight *= 1.3
+                        weight *= 1.5
                     elif w in title_low:  # Substring com a fallback
-                        weight *= 1.1
+                        weight *= 1.2
             if exact_matches == 0:
                 # Si no hi ha coincidències exactes, penalitza lleugerament
                 weight *= 0.8
@@ -711,7 +714,10 @@ def _postfilter_tolerant(cands: List[Tuple[Doc, float]], tema_low: str, keep: in
 def search_faiss(query_text: str,
                  poble_filter: Optional[str] = None,
                  top_k: int = 8,
-                 theme_categories: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                 theme_categories: Optional[List[str]] = None,
+                 any_inici: Optional[int] = None,
+                 any_fi: Optional[int] = None,
+                 segle: Optional[int] = None) -> List[Dict[str, Any]]:
     """
     Cerca robusta:
       1) embed_query(query expandit semànticament)
@@ -754,6 +760,14 @@ def search_faiss(query_text: str,
             score *= 1.15
 
         stack.append((doc, score))
+
+    # 3.5) Aplicar filtre temporal si s'ha especificat
+    if any_inici is not None or any_fi is not None or segle is not None:
+        docs_to_filter = [doc for doc, _ in stack]
+        filtered_docs = filter_docs_by_temporal_criteria(docs_to_filter, any_inici, any_fi, segle)
+        filtered_ids = {doc.id for doc in filtered_docs}
+        stack = [(doc, score) for doc, score in stack if doc.id in filtered_ids]
+        logger.info(f"[SEARCH] Filtre temporal aplicat: {len(stack)} documents restants")
 
     # 4) ordenar i filtre tolerant
     stack.sort(key=lambda x: x[1], reverse=True)
@@ -864,7 +878,7 @@ def clean_repetitions(text: str) -> str:
     Elimina repeticions literals, punts dobles i redundàncies
     que sovint apareixen en resums concatenats de múltiples fonts.
     """
-    logger.debug(f"[FORMAT] Netejant repeticions (len={len(text)})")
+    # logger.debug(f"[FORMAT] Netejant repeticions (len={len(text)})")
 
     # 🔧 Substitucions bàsiques
     text = re.sub(r'\.\s*\.', '.', text)
@@ -879,7 +893,7 @@ def clean_repetitions(text: str) -> str:
     # ⚙️ Normalitza majúscules inicials després de punt
     text = re.sub(r'([.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
 
-    logger.debug(f"[FORMAT] Text net finalitzat (len={len(text)})")
+    # logger.debug(f"[FORMAT] Text net finalitzat (len={len(text)})")
     return text
 
 #---------------------------------------------------------------
@@ -891,10 +905,10 @@ def split_for_telegram(text: str, max_len: int = TELEGRAM_CHUNK) -> List[str]:
     Manté el format Markdown i intenta trencar pels salts de línia
     o punts, per evitar talls bruscos a mitja frase.
     """
-    logger.debug(f"[SPLIT] Preparant missatge per Telegram (len={len(text)})")
+    # logger.debug(f"[SPLIT] Preparant missatge per Telegram (len={len(text)})")
 
     if len(text) <= max_len:
-        logger.debug("[SPLIT] Text curt, no cal dividir.")
+        # logger.debug("[SPLIT] Text curt, no cal dividir.")
         return [text]
 
     parts = []
@@ -915,11 +929,11 @@ def split_for_telegram(text: str, max_len: int = TELEGRAM_CHUNK) -> List[str]:
         parts.append(part)
         remaining = remaining[cut_idx + 1:].strip()
 
-        logger.debug(f"[SPLIT] Fragment afegit (len={len(part)}), restants={len(remaining)}")
+        # logger.debug(f"[SPLIT] Fragment afegit (len={len(part)}), restants={len(remaining)}")
 
     if remaining:
         parts.append(remaining)
-        logger.debug(f"[SPLIT] Últim fragment (len={len(remaining)})")
+        # logger.debug(f"[SPLIT] Últim fragment (len={len(remaining)})")
 
     logger.info(f"[SPLIT] Total fragments generats: {len(parts)}")
     return parts
@@ -952,7 +966,7 @@ def _format_articles_footer(results: List[Dict[str, Any]]) -> str:
     """
     Crea un peu de resposta amb els títols i enllaços dels articles trobats.
     """
-    logger.debug(f"[FORMAT] Creant peu d'articles per {len(results)} resultats.")
+    # logger.debug(f"[FORMAT] Creant peu d'articles per {len(results)} resultats.")
 
     if not results:
         return "(Cap article disponible.)"
@@ -966,7 +980,7 @@ def _format_articles_footer(results: List[Dict[str, Any]]) -> str:
         footer_lines.append(f"/{art_id} {title} (Pes: {pes:.2f})")
 
     footer_text = "\n".join(footer_lines)
-    logger.debug(f"[FORMAT] Peu generat amb {len(footer_lines)} línies.")
+    # logger.debug(f"[FORMAT] Peu generat amb {len(footer_lines)} línies.")
     return footer_text
 
 #---------------------------------------------------------------
@@ -979,7 +993,7 @@ def compose_summary_response(tema: str,
     """
     Genera un resum fidel al corpus, limitat i amb opció d'ampliar si és llarg.
     """
-    logger.debug(f"[COMPOSE] Generant resum per tema='{tema}' (brief={brief}, poble={poble})")
+    # logger.debug(f"[COMPOSE] Generant resum per tema='{tema}' (brief={brief}, poble={poble})")
 
     if not results:
         return "(Cap resultat disponible.)"
@@ -1019,17 +1033,32 @@ def compose_summary_response(tema: str,
     footer = "\n\nArticles:\n" + _format_articles_footer(top_results)
     resposta = resum + footer
 
-    logger.debug(f"[COMPOSE] Resum generat ({len(resposta)} caràcters, {len(top_results)} resultats)")
+    # logger.debug(f"[COMPOSE] Resum generat ({len(resposta)} caràcters, {len(top_results)} resultats)")
     return resposta
 
 def compose_list_response(tema: str, results: list, poble: Optional[str]) -> str:
     """
     Llista d'articles relacionats amb el tema, amb resum curt de cada article.
+    Si el poble està fixat (és un dels 14 pobles de la comarca i no és "tots"),
+    només llista articles d'aquell poble específic.
     """
-    logger.debug(f"[COMPOSE] Llista per tema='{tema}' (poble={poble})")
+    # logger.debug(f"[COMPOSE] Llista per tema='{tema}' (poble={poble})")
+
+    # Filtrar per poble si està especificat i és un poble de la comarca
+    filtered_results = results
+    if poble and poble != "tots" and poble in KNOWN_POPS:
+        # logger.debug(f"[COMPOSE] Filtrant per poble específic: {poble}")
+        filtered_results = []
+        for r in results:
+            # Buscar el document corresponent per obtenir el poble
+            doc_id = r.get("id")
+            doc = next((d for d in documents if d.id == doc_id), None)
+            if doc and doc.population and canonicalize_population(doc.population) == poble:
+                filtered_results.append(r)
+        # logger.debug(f"[COMPOSE] Resultats filtrats: {len(filtered_results)} de {len(results)}")
 
     lines = []
-    for r in results[:8]:  # Redueixo a 8 per tenir espai per resums
+    for r in filtered_results[:8]:  # Redueixo a 8 per tenir espai per resums
         art_id = r.get("id")
         title = r.get("titol", r.get("title", "Sense títol"))
         pes = r.get("pes", r.get("score", 0.0))
@@ -1046,11 +1075,343 @@ def compose_list_response(tema: str, results: list, poble: Optional[str]) -> str
         lines.append("")  # Línia buida entre articles
 
     if not lines:
-        return "⚠️ No hi ha articles relacionats amb aquest tema."
+        if poble and poble != "tots" and poble in KNOWN_POPS:
+            return f"⚠️ No hi ha articles relacionats amb '{tema}' a {poble.title()}."
+        else:
+            return "⚠️ No hi ha articles relacionats amb aquest tema."
 
     body = "\n".join(lines).strip()
-    logger.debug(f"[COMPOSE] Llista generada ({len(results)} elements)")
-    return f"🗂️ **Articles relacionats amb '{tema}'**\n\n{body}"
+    # logger.debug(f"[COMPOSE] Llista generada ({len(filtered_results)} elements)")
+    
+    # Header adaptat segons si hi ha filtre de poble
+    if poble and poble != "tots" and poble in KNOWN_POPS:
+        return f"🗂️ **Articles relacionats amb '{tema}' a {poble.title()}**\n\n{body}"
+    else:
+        return f"🗂️ **Articles relacionats amb '{tema}'**\n\n{body}"
+
+def compose_arxiu_response(tema: str, results: list, poble: Optional[str]) -> str:
+    """
+    Genera contingut d'arxiu per a crides naturals.
+    """
+    # logger.debug(f"[COMPOSE] Arxiu per tema='{tema}' (poble={poble})")
+
+    if not tema or tema.strip() == "":
+        # Sense tema: mostra estadístiques generals de l'arxiu
+        return analyze_corpus_topics()
+    elif tema.lower() == "poble" or tema.lower() == "pobles":
+        # Cas especial: estadístiques de pobles
+        return analyze_pobles_stats()
+    else:
+        # Amb tema: analitza el topic específic
+        return analyze_topic_importance(tema)
+
+def compose_creua_response(tema: str, results: list, poble: Optional[str]) -> str:
+    """
+    Genera contingut de creua per a crides naturals.
+    """
+    # logger.debug(f"[COMPOSE] Creua per tema='{tema}' (poble={poble})")
+
+    if not results:
+        return f"⚠️ No s'han trobat articles sobre *{tema}*"
+
+    # Capçalera
+    header = f"🔗 **CREUA: {tema.upper()}**\n"
+    if poble and poble != "tots":
+        header += f"📍 **Poble:** {poble}\n"
+    header += f"📊 **{len(results)} articles relacionats**\n\n"
+
+    # Llista d'articles amb relacions
+    text = header
+    for i, r in enumerate(results, start=1):
+        title = r.get("title", "Sense títol")
+        score = r.get("score", 0.0)
+        doc_id = r.get("id", "?")
+        author = r.get("author", "")
+        years = r.get("years", "")
+        topics = r.get("topics", [])
+
+        info_parts = []
+        if author and author != "Autor desconegut":
+            info_parts.append(f"👤 {author}")
+        if years:
+            info_parts.append(f"📅 {years}")
+        if topics:
+            info_parts.append(f"🏷️ {', '.join(topics[:3])}")
+
+        info_str = f" ({', '.join(info_parts)})" if info_parts else ""
+
+        text += f"**{i}.** [{title}](https://t.me/misCEREbot/{doc_id}){info_str} — {score:.2f}\n"
+
+    return text
+
+def analyze_corpus_topics() -> str:
+    """
+    Analitza tots els topics del corpus i retorna estadístiques.
+    """
+    logger.info("[ANALYZE] Analitzant topics del corpus")
+    
+    topic_counts = {}
+    total_docs = len(documents)
+    
+    for doc in documents:
+        topics = doc.topics
+        for topic in topics:
+            topic_counts[topic] = topic_counts.get(topic, 0) + 1
+    
+    # Ordena per freqüència
+    sorted_topics = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)
+    
+    # Genera estadístiques
+    text = f"📊 **ANÀLISI DE L'ARXIU**\n\n"
+    text += f"📚 **Total documents:** {total_docs}\n"
+    text += f"🏷️ **Topics únics:** {len(topic_counts)}\n\n"
+    
+    text += "**TOP 20 TOPICS MÉS FRQÜENTS:**\n"
+    for i, (topic, count) in enumerate(sorted_topics[:20], 1):
+        percentage = (count / total_docs) * 100
+        text += f"{i:2d}. **{topic}** — {count} docs ({percentage:.1f}%)\n"
+    
+    if len(sorted_topics) > 20:
+        text += f"\n... i {len(sorted_topics) - 20} topics més\n"
+    
+    return text
+
+def analyze_topic_importance(topic: str) -> str:
+    """
+    Analitza la importància d'un topic específic respecte a tot l'arxiu.
+    """
+    # logger.debug(f"[ANALYZE] Analitzant importància del topic '{topic}'")
+    
+    topic_lower = topic.lower()
+    matching_docs = []
+    all_topics = {}
+    total_docs = len(documents)
+    
+    for doc in documents:
+        doc_topics = doc.topics
+        for doc_topic in doc_topics:
+            all_topics[doc_topic] = all_topics.get(doc_topic, 0) + 1
+            if topic_lower in doc_topic.lower():
+                matching_docs.append(doc)
+    
+    if not matching_docs:
+        return f"⚠️ No s'han trobat documents amb el topic *{topic}*"
+    
+    logger.info(f"[ANALYZE] Trobats {len(matching_docs)} documents per topic '{topic}'")
+    
+    # Estadístiques del topic
+    topic_count = len(matching_docs)
+    percentage = (topic_count / total_docs) * 100
+    
+    # Anys de cobertura
+    years = []
+    for doc in matching_docs:
+        doc_years = getattr(doc, 'years', '')
+        if doc_years:
+            years.append(doc_years)
+    
+    # Autors més freqüents
+    authors = {}
+    for doc in matching_docs:
+        author = doc.author or "Autor desconegut"
+        authors[author] = authors.get(author, 0) + 1
+    
+    # Topics relacionats
+    related_topics = {}
+    for doc in matching_docs:
+        doc_topics = doc.topics
+        for doc_topic in doc_topics:
+            if topic_lower not in doc_topic.lower():
+                related_topics[doc_topic] = related_topics.get(doc_topic, 0) + 1
+    
+    # Genera anàlisi
+    text = f"🔍 **ANÀLISI DEL TOPIC: {topic.upper()}**\n\n"
+    text += f"📊 **Estadístiques:**\n"
+    text += f"• Documents: {topic_count} de {total_docs} ({percentage:.1f}%)\n"
+    text += f"• Cobertura temporal: {', '.join(years[:5])}\n"
+    if len(years) > 5:
+        text += f"  ... i {len(years) - 5} períodes més\n"
+    
+    text += f"\n👥 **Autors principals:**\n"
+    sorted_authors = sorted(authors.items(), key=lambda x: x[1], reverse=True)
+    for author, count in sorted_authors[:5]:
+        text += f"• {author}: {count} documents\n"
+    
+    text += f"\n🏷️ **Topics relacionats:**\n"
+    sorted_related = sorted(related_topics.items(), key=lambda x: x[1], reverse=True)
+    for related_topic, count in sorted_related[:10]:
+        text += f"• {related_topic}: {count} documents\n"
+    
+    text += f"\n📚 **Documents amb aquest topic:**\n"
+    for i, doc in enumerate(matching_docs[:10], 1):
+        title = doc.title or "Sense títol"
+        doc_id = getattr(doc, 'idc', doc.id)  # Usa idc si està disponible, sinó id
+        logger.info(f"[ANALYZE] Doc {i}: title='{title}', id={doc_id}, topics={doc.topics}")
+        text += f"/{doc_id} {title}\n"
+    
+    if len(matching_docs) > 10:
+        text += f"... i {len(matching_docs) - 10} documents més\n"
+    
+    return text
+
+def analyze_pobles_stats() -> str:
+    """
+    Analitza les estadístiques dels pobles del corpus.
+    """
+    # logger.debug("[ANALYZE] Analitzant estadístiques de pobles")
+
+    poble_counts = {}
+    total_docs = len(documents)
+
+    for doc in documents:
+        poble = doc.population
+        if poble:
+            poble_norm = canonicalize_population(poble)
+            poble_counts[poble_norm] = poble_counts.get(poble_norm, 0) + 1
+
+    # Ordena per freqüència
+    sorted_pobles = sorted(poble_counts.items(), key=lambda x: x[1], reverse=True)
+
+    # Genera estadístiques
+    text = f"🏘️ **ANÀLISI DE POBLES**\n\n"
+    text += f"📚 **Total documents:** {total_docs}\n"
+    text += f"🏘️ **Pobles únics:** {len(poble_counts)}\n\n"
+
+    text += "**DISTRIBUCIÓ PER POBLE:**\n"
+    for i, (poble, count) in enumerate(sorted_pobles, 1):
+        percentage = (count / total_docs) * 100
+        text += f"{i:2d}. **{poble.title()}** — {count} docs ({percentage:.1f}%)\n"
+
+    # Anàlisi temporal per poble
+    text += f"\n📅 **COBERTURA TEMPORAL PER POBLE:**\n"
+    for poble, count in sorted_pobles[:5]:  # Top 5 pobles
+        years = []
+        for doc in documents:
+            if doc.population and canonicalize_population(doc.population) == poble:
+                doc_years = getattr(doc, 'years', '')
+                if doc_years:
+                    years.append(doc_years)
+        
+        if years:
+            text += f"• **{poble.title()}**: {', '.join(years[:3])}\n"
+            if len(years) > 3:
+                text += f"  ... i {len(years) - 3} períodes més\n"
+
+    return text
+
+def extract_year_from_text(text: str) -> Optional[int]:
+    """
+    Extreu un any de 4 dígits del text.
+    """
+    import re
+    years = re.findall(r'\b(1[0-9]{3}|2[0-9]{3})\b', text)
+    if years:
+        return int(years[0])
+    return None
+
+def extract_year_range_from_text(text: str) -> Optional[tuple]:
+    """
+    Extreu un rang d'anys del text (ex: "1936-1939").
+    """
+    import re
+    # Busca patrons com "1936-1939", "1936 - 1939", etc.
+    pattern = r'(\d{4})\s*[-–]\s*(\d{4})'
+    match = re.search(pattern, text)
+    if match:
+        start_year = int(match.group(1))
+        end_year = int(match.group(2))
+        return (start_year, end_year)
+    return None
+
+def parse_temporal_query(query: str) -> tuple:
+    """
+    Analitza una consulta temporal i retorna (tema, any_inici, any_fi, segle).
+    """
+    import re
+    
+    query_lower = query.lower()
+    tema = query
+    any_inici = None
+    any_fi = None
+    segle = None
+    
+    # Detecta segle (ex: "segle XV", "s. XV", "segle 15")
+    segle_match = re.search(r'segle\s+(?:X{0,3}(?:IX|IV|V|I{0,3})?|\d+)', query_lower)
+    if segle_match:
+        segle_text = segle_match.group(0)
+        # Converteix segle romà a número
+        segle_num = segle_text.split()[-1]
+        if segle_num.isdigit():
+            segle = int(segle_num)
+        else:
+            # Converteix romà a número (simplificat)
+            romans = {'i': 1, 'ii': 2, 'iii': 3, 'iv': 4, 'v': 5, 'vi': 6, 'vii': 7, 'viii': 8, 'ix': 9, 'x': 10,
+                     'xi': 11, 'xii': 12, 'xiii': 13, 'xiv': 14, 'xv': 15, 'xvi': 16, 'xvii': 17, 'xviii': 18, 'xix': 19, 'xx': 20}
+            segle = romans.get(segle_num.lower(), None)
+    
+    # Detecta rang d'anys
+    year_range = extract_year_range_from_text(query)
+    if year_range:
+        any_inici, any_fi = year_range
+        # Neteja el tema
+        tema = re.sub(r'\d{4}\s*[-–]\s*\d{4}', '', query).strip()
+    
+    # Detecta any únic
+    elif extract_year_from_text(query):
+        any_inici = extract_year_from_text(query)
+        any_fi = any_inici
+        # Neteja el tema
+        tema = re.sub(r'\b\d{4}\b', '', query).strip()
+    
+    # Neteja el tema
+    tema = re.sub(r'\b(segle|s\.?)\s+(?:X{0,3}(?:IX|IV|V|I{0,3})?|\d+)\b', '', tema, flags=re.IGNORECASE).strip()
+    tema = re.sub(r'\s+', ' ', tema).strip()
+    
+    return tema, any_inici, any_fi, segle
+
+def filter_docs_by_temporal_criteria(docs: List[Doc], any_inici: Optional[int], any_fi: Optional[int], segle: Optional[int]) -> List[Doc]:
+    """
+    Filtra documents segons criteris temporals.
+    """
+    filtered_docs = []
+    
+    for doc in docs:
+        doc_years = getattr(doc, 'years', '')
+        if not doc_years:
+            continue
+            
+        # Extreu anys del document
+        doc_year_range = extract_year_range_from_text(doc_years)
+        doc_single_year = extract_year_from_text(doc_years)
+        
+        if doc_year_range:
+            doc_start, doc_end = doc_year_range
+        elif doc_single_year:
+            doc_start = doc_end = doc_single_year
+        else:
+            continue
+        
+        # Filtra per segle
+        if segle:
+            segle_start = (segle - 1) * 100 + 1
+            segle_end = segle * 100
+            if not (doc_start <= segle_end and doc_end >= segle_start):
+                continue
+        
+        # Filtra per rang d'anys
+        if any_inici and any_fi:
+            if not (doc_start <= any_fi and doc_end >= any_inici):
+                continue
+        elif any_inici:
+            if doc_end < any_inici:
+                continue
+        elif any_fi:
+            if doc_start > any_fi:
+                continue
+        
+        filtered_docs.append(doc)
+    
+    return filtered_docs
 
 def get_article_by_id_or_query(identifier: str) -> List[Dict[str, Any]]:
     """
@@ -1076,22 +1437,22 @@ def get_article_by_id_or_query(identifier: str) -> List[Dict[str, Any]]:
                 "score": 1.0,
                 "pes": 1.0
             }
-            logger.debug(f"[GET_ARTICLE] Trobat article per ID {art_id}: {doc.title}")
+            # logger.debug(f"[GET_ARTICLE] Trobat article per ID {art_id}: {doc.title}")
             return [result]
         else:
-            logger.debug(f"[GET_ARTICLE] ID {art_id} no trobat al corpus")
+            # logger.debug(f"[GET_ARTICLE] ID {art_id} no trobat al corpus")
             return []
     except ValueError:
         # No és un número, tracta com a tema de cerca
-        logger.debug(f"[GET_ARTICLE] Cercant tema: {clean_id}")
+        # logger.debug(f"[GET_ARTICLE] Cercant tema: {clean_id}")
         return search_faiss(clean_id, top_k=3)
 
 def create_comparison_response(temaA: str, temaB: str, resA: List[Dict], resB: List[Dict]) -> str:
     """
     Crea una comparació estructurada entre dos articles o grups d'articles.
-    Enfoca en semblances i diferències del tema principal.
+    Utilitza IA per analitzar el contingut específic i fer comparacions detallades.
     """
-    logger.debug(f"[COMPARISON] Creant comparació entre {temaA} i {temaB}")
+    # logger.debug(f"[COMPARISON] Creant comparació entre {temaA} i {temaB}")
     
     # Agafa el primer resultat de cada grup (el més rellevant)
     artA = resA[0] if resA else None
@@ -1105,36 +1466,113 @@ def create_comparison_response(temaA: str, temaB: str, resA: List[Dict], resB: L
     titleB = artB.get("title", "Sense títol")
     contentA = artA.get("contingut", artA.get("summary", ""))
     contentB = artB.get("contingut", artB.get("summary", ""))
+    authorA = artA.get("author", "Autor desconegut")
+    authorB = artB.get("author", "Autor desconegut")
+    yearsA = artA.get("years", "")
+    yearsB = artB.get("years", "")
+    topicsA = artA.get("topics", [])
+    topicsB = artB.get("topics", [])
     
-    # Analitza el contingut per identificar el tema principal
-    main_topic = analyze_main_topic(contentA, contentB, titleA, titleB)
-    
-    # Crea la comparació estructurada
+    # Utilitza IA per generar una comparació intel·ligent
+    try:
+        comparison_text = generate_ai_comparison(
+            titleA, contentA, authorA, yearsA, topicsA,
+            titleB, contentB, authorB, yearsB, topicsB
+        )
+        
+        # Peu amb referències
+        comparison_text += "\n\n**Articles comparats:**\n"
+        comparison_text += f"• /{artA.get('id')} {titleA}\n"
+        comparison_text += f"• /{artB.get('id')} {titleB}\n"
+        
+        return comparison_text
+        
+    except Exception as e:
+        logger.error(f"[COMPARISON] Error generant comparació IA: {e}")
+        # Fallback a mètode bàsic
+        return create_basic_comparison(titleA, contentA, titleB, contentB, artA.get('id'), artB.get('id'))
+
+def generate_ai_comparison(titleA: str, contentA: str, authorA: str, yearsA: str, topicsA: list,
+                          titleB: str, contentB: str, authorB: str, yearsB: str, topicsB: list) -> str:
+    """
+    Genera una comparació intel·ligent entre dos articles utilitzant IA.
+    """
+    # Prepara el context dels articles
+    context = f"""
+ARTICLE A:
+Títol: {titleA}
+Autor: {authorA}
+Període: {yearsA}
+Temes: {', '.join(topicsA) if topicsA else 'No especificats'}
+Contingut: {contentA[:1000]}...
+
+ARTICLE B:
+Títol: {titleB}
+Autor: {authorB}
+Període: {yearsB}
+Temes: {', '.join(topicsB) if topicsB else 'No especificats'}
+Contingut: {contentB[:1000]}...
+"""
+
+    prompt = f"""Ets un expert en història local de la Ribera d'Ebre. Analitza aquests dos articles acadèmics i fes una comparació detallada i específica.
+
+{context}
+
+Genera una comparació estructurada amb aquest format:
+
+🔍 **Comparació entre articles**
+
+**Article A:** [títol]
+**Article B:** [títol]
+
+🟢 **Semblances principals:**
+• [Semblança específica 1 basada en el contingut real]
+• [Semblança específica 2 basada en el contingut real]
+• [Semblança específica 3 basada en el contingut real]
+
+🔴 **Diferències destacades:**
+• [Diferència específica 1 basada en el contingut real]
+• [Diferència específica 2 basada en el contingut real]
+• [Diferència específica 3 basada en el contingut real]
+
+📋 **Síntesi del tema principal:**
+[Anàlisi específica del tema comú, basada en el contingut real dels articles]
+
+IMPORTANT: 
+- Sigues específic i detallat, no genèric
+- Basa't en el contingut real dels articles
+- Menciona dades, fets, dates, llocs o personatges específics quan sigui rellevant
+- Evita frases genèriques com "tracten sobre la Ribera d'Ebre" o "enfocament acadèmic"
+- Fes comparacions intel·ligents i útils per a un investigador"""
+
+    try:
+        response = OPENAI.chat(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000,
+            temperature=0.7
+        )
+        
+        if response and response.strip():
+            return response.strip()
+        else:
+            raise Exception("Resposta buida de l'IA")
+            
+    except Exception as e:
+        logger.error(f"[AI-COMPARISON] Error: {e}")
+        raise e
+
+def create_basic_comparison(titleA: str, contentA: str, titleB: str, contentB: str, idA: str, idB: str) -> str:
+    """
+    Comparació bàsica com a fallback quan l'IA falla.
+    """
     resposta = f"🔍 **Comparació entre articles**\n\n"
     resposta += f"**Article A:** {titleA}\n"
     resposta += f"**Article B:** {titleB}\n\n"
-    
-    # Genera semblances basades en el contingut real
-    semblances = generate_similarities(contentA, contentB, titleA, titleB)
-    resposta += "🟢 **Semblances principals:**\n"
-    resposta += "\n".join(semblances) + "\n\n"
-    
-    # Genera diferències basades en el contingut real
-    diferencies = generate_differences(contentA, contentB, titleA, titleB)
-    resposta += "🔴 **Diferències destacades:**\n"
-    resposta += "\n".join(diferencies) + "\n\n"
-    
-    # Síntesi del tema principal
-    resposta += f"📋 **Síntesi del tema '{main_topic}':**\n"
-    sintesi = generate_topic_synthesis(main_topic, contentA, contentB)
-    resposta += sintesi + "\n\n"
-    
-    # Peu amb referències
+    resposta += "⚠️ Comparació bàsica (anàlisi detallada no disponible)\n\n"
     resposta += "**Articles comparats:**\n"
-    resposta += f"• /{artA.get('id')} {titleA}\n"
-    resposta += f"• /{artB.get('id')} {titleB}\n"
-    
-    logger.debug(f"[COMPARISON] Comparació generada ({len(resposta)} caràcters)")
+    resposta += f"• /{idA} {titleA}\n"
+    resposta += f"• /{idB} {titleB}\n"
     return resposta
 
 def analyze_main_topic(contentA: str, contentB: str, titleA: str, titleB: str) -> str:
@@ -1317,7 +1755,7 @@ def sintetitza_tema(tema: str,
         resum = str(getattr(doc, "summary", "") or "").strip()
 
         if not resum:
-            logger.debug(f"[SINTESI] Doc sense resum: {title}")
+            # logger.debug(f"[SINTESI] Doc sense resum: {title}")
             continue
 
         # Prioritza diversitat geogràfica si és possible
@@ -1368,6 +1806,7 @@ def sintetitza_tema(tema: str,
         "2. DESENVOLUPAMENT: Ric en dades del corpus, cites específiques, fets importants i interessants. OBLIGATORI: Menciona almenys 3-4 pobles diferents i aspectes diversos del tema. Un paràgraf per sub-història dins de la història gran. Inclou cites directes del corpus quan sigui rellevant. NO et centris només en un lloc o aspecte.\n"
         "3. CONCLUSIÓ: Basada únicament en el que s'ha explicat al desenvolupament, no informació externa.\n\n"
         "IMPORTANT: Fes recerca historiogràfica, no text literari. Mostra informació valuosa de manera resumida. DIVERSIFICA les fonts i pobles mencionats, no et centris només en un lloc.\n\n"
+        "CRÍTICA: COMPLETA SEMPRE les frases i paràgrafs. No deixis frases a mitges. Si t'apropies al límit de text, tanca bé el paràgraf amb una frase conclusiva.\n\n"
         "📚 Context (no el copiïs literalment):\n"
         f"{context_text}"
     )
@@ -1382,7 +1821,7 @@ def sintetitza_tema(tema: str,
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.8 if humor_mode else 0.6,
-                max_tokens=900 if expand_mode else 500,
+                max_tokens=1200 if expand_mode else 800,
             ).strip()
             logger.info(f"[SINTESI] IA OK ({len(text_resposta)} caràcters)")
             return text_resposta
@@ -1394,8 +1833,8 @@ def sintetitza_tema(tema: str,
         logger.warning(f"[SINTESI] Fallback local: {error_type}: {error_msg}")
         
         # Log additional context for debugging
-        logger.debug(f"[SINTESI] Context length: {len(context_text)} chars")
-        logger.debug(f"[SINTESI] Topic: {tema}, Humor mode: {humor_mode}, Expand mode: {expand_mode}")
+        # logger.debug(f"[SINTESI] Context length: {len(context_text)} chars")
+        # logger.debug(f"[SINTESI] Topic: {tema}, Humor mode: {humor_mode}, Expand mode: {expand_mode}")
         
         # Fallback: pega coherent trencada en 2-3 paràgrafs curtets
         paras = re.split(r'(?<=[.!?])\s+', context_text)
@@ -1415,16 +1854,20 @@ def create_article_mode_response(doc: Doc, uid: int) -> str:
     Crea la resposta per al mode article amb capçalera, introducció curta i footer.
     Gestiona la paginació del contingut llarg.
     """
-    logger.debug(f"[ARTICLE] Creant mode article per doc {doc.id}")
+    # logger.debug(f"[ARTICLE] Creant mode article per doc {doc.id}")
     
-    # Capçalera amb nom i autor (sense any)
+    # Capçalera estandarditzada
     title = doc.title or "Sense títol"
     author = doc.author or "Autor desconegut"
+    poble = doc.population or 'Ubicació no especificada'
+    years = getattr(doc, 'years', '') or 'Període no especificat'
     
-    header = f"📄 **{title}**\n"
+    header = f"**Mode: Article**\n"
+    header += f"📄 **{title}**\n"
     header += f"👤 *{author}*\n"
-    header += f"📍 {doc.population or 'Ubicació no especificada'}\n\n"
-    
+    header += f"📍 {poble}\n"
+    header += f"📅 {years}\n\n"
+
     # Introducció curta (resum breu)
     intro = doc.summary or ""
     if not intro and doc.summary_long:
@@ -1444,7 +1887,7 @@ def create_article_mode_response(doc: Doc, uid: int) -> str:
     footer = "\n\n📖 *Opcions:*\n"
     footer += "• [/llegir](/llegir) resum íntegre de l'article\n"
     footer += "• Fes preguntes sobre aquest article en concret\n"
-    footer += "• [/nou](/nou) per iniciar consulta\n"
+    footer += "• [/nou](/nou) per iniciar consulta nou tema\n"
     
     # Desa l'article a la sessió per permetre navegació
     sess = sessions.get_session(uid)
@@ -1454,7 +1897,7 @@ def create_article_mode_response(doc: Doc, uid: int) -> str:
     sess.last_summary = doc.summary_long or doc.summary or ""
     
     response = header + intro + footer
-    logger.debug(f"[ARTICLE] Resposta generada (len={len(response)})")
+    # logger.debug(f"[ARTICLE] Resposta generada (len={len(response)})")
     return response
 
 def get_article_page(uid: int, page: int = 1) -> str:
@@ -1522,16 +1965,17 @@ def get_article_page(uid: int, page: int = 1) -> str:
 #---------------------------------------------------------------
 #4--------CAPÇALERA: GESTIÓ D'UNA CONSULTA ----------------------
 #---------------------------------------------------------------
-def _build_header(mode: str, tema: str, poble: Optional[str]) -> str:
+def _build_header(mode: str, tema: str, poble: Optional[str], any_inici: Optional[int] = None, any_fi: Optional[int] = None, segle: Optional[int] = None) -> str:
     """Genera capçalera comuna amb Mode/Tema/Poble.
 
-    Modes acceptats: 'cerca' (per resums), 'llista', 'article', 'arxiu'.
+    Modes acceptats: 'cerca' (per resums), 'llista', 'article', 'arxiu', 'creua'.
     Altres valors es mapegen a 'cerca'.
     """
     mode_map = {
         "llista": "Llista",
         "article": "Article",
         "arxiu": "Arxiu",
+        "creua": "Creua",
         "cerca": "Cerca",
         "resum": "Cerca",
         "resum_breu": "Cerca",
@@ -1539,16 +1983,35 @@ def _build_header(mode: str, tema: str, poble: Optional[str]) -> str:
     mode_label = mode_map.get((mode or "").lower(), "Cerca")
     tema_label = tema or "—"
     poble_label = poble or "Tots"
-    return f"Mode: {mode_label}\nTema: {tema_label}  Poble: {poble_label}\n"
+    
+    # Afegeix informació temporal si s'ha aplicat filtre
+    temporal_info = ""
+    if any_inici or any_fi or segle:
+        if segle:
+            temporal_info = f"  📅 Segle {segle}"
+        elif any_inici and any_fi:
+            temporal_info = f"  📅 {any_inici}-{any_fi}"
+        elif any_inici:
+            temporal_info = f"  📅 Des de {any_inici}"
+        elif any_fi:
+            temporal_info = f"  📅 Fins a {any_fi}"
+    
+    return f"Mode: {mode_label}\nTema: {tema_label}  Poble: {poble_label}{temporal_info}\n"
 
 def _detect_mode_from_text(text: str) -> str:
     t = normalize_text_local(text)
     if any(x in t for x in LIST_TRIGGERS):
         return "llista"
+    if any(x in t for x in ARXIU_TRIGGERS):
+        return "arxiu"
+    if any(x in t for x in CREUA_TRIGGERS):
+        return "creua"
     if any(x in t for x in RESUM_BREU_TRIGGERS):
         return "resum_breu"
     if any(x in t for x in RESUME_TRIGGERS):
         return "resum"
+    if any(x in t for x in CERCA_TRIGGERS):
+        return "cerca"
     return "cerca"
 
 def _tema_from_text_or_memory(text: str, sess: SessionObj) -> str:
@@ -1596,15 +2059,16 @@ CONSULTA: "{text}"
 
 REGLES IMPORTANTS:
 - FILTRA paraules buides: "parlam", "dels", "del", "de la", "de les", "a la", "sobre", "importants", "comarca", "ribera", "tots", "totes", "q", "que", "saps", "sabes", "conoces", "conegut", "?", "¿", "dime", "digues", "explica", "parla"
-- TEMA: Només paraules clau del CONTINGUT real (història, castells, ibers, arqueologia, riu Ebre, etc.)
+- TEMA: Només paraules clau del CONTINGUT real (història, castells, ibers, arqueologia, riu Ebre, camins, senderes, etc.)
 - LOCATION: Poble específic o "tots" (Ribera d'Ebre, comarca, ribera = "tots")
-- MODE: "cerca", "llista", "resum", "conversa", "amplia" (si vol ampliar resposta anterior)
+- MODE: "cerca", "llista", "resum", "conversa", "amplia", "arxiu", "creua" (si vol ampliar resposta anterior)
 - IS_CONVERSA: true/false si és salutació/xerrada casual
 
 COMANDES ESPECIALS:
 - Si diu "amplia" → mode: "amplia", tema: del context anterior
 - Si diu "llista" → mode: "llista" 
 - Si diu "arxiu" → mode: "arxiu"
+- Si diu "creua" → mode: "creua"
 - Si diu "nou" → mode: "nou" (neteja tot)
 
 Exemples:
@@ -1614,8 +2078,19 @@ Exemples:
 - "que sabes sobre castells" → tema: ["castells"], location: "tots", mode: "cerca"
 - "castell fortalesa" → tema: ["castell", "fortalesa"], location: "tots", mode: "cerca"
 - "castell ribera d'ebre" → tema: ["castell"], location: "tots", mode: "cerca"
+- "castell de ginestar" → tema: ["castell"], location: "ginestar", mode: "cerca"
+- "historia de miravet" → tema: ["historia"], location: "miravet", mode: "cerca"
+- "camins de la ribera" → tema: ["camins"], location: "tots", mode: "cerca"
+- "camí de ginestar" → tema: ["camí"], location: "ginestar", mode: "cerca"
+- "camins" → tema: ["camins"], location: "tots", mode: "cerca"
+- "camí" → tema: ["camí"], location: "tots", mode: "cerca"
+- "senderes de ginestar" → tema: ["senderes"], location: "ginestar", mode: "cerca"
 - "amplia tema ibers" → tema: ["ibers"], location: "tots", mode: "amplia"
 - "llista castells" → tema: ["castells"], location: "tots", mode: "llista"
+- "llista cognomes de ginestar" → tema: ["cognoms"], location: "ginestar", mode: "llista"
+- "llista fets historics de la ginestar" → tema: ["fets", "historics"], location: "ginestar", mode: "llista"
+- "arxiu castells" → tema: ["castells"], location: "tots", mode: "arxiu"
+- "creua castells ibers" → tema: ["castells", "ibers"], location: "tots", mode: "creua"
 - "hola" → tema: [], location: "tots", mode: "conversa", is_conversa: true
 - "hola com estàs" → tema: [], location: "tots", mode: "conversa", is_conversa: true
 - "bon dia" → tema: [], location: "tots", mode: "conversa", is_conversa: true
@@ -1719,6 +2194,8 @@ def _handle_ambiguous_query(text: str, tema_list: list, location: str, mode: str
             "• `castells de la Ribera`\n"
             "• `història d'Ascó`\n"
             "• `llista jaciments arqueològics`\n"
+            "• `arxiu castells`\n"
+            "• `creua castells ibers`\n"
             "• `resum sobre els ibers`"
         )
     
@@ -1776,7 +2253,9 @@ def _handle_ambiguous_query(text: str, tema_list: list, location: str, mode: str
             "Exemples:\n"
             "• `castells`\n"
             "• `història d'Ascó`\n"
-            "• `llista jaciments`"
+            "• `llista jaciments`\n"
+            "• `arxiu castells`\n"
+            "• `creua castells ibers`"
         )
     
     # Fallback genèric
@@ -1806,9 +2285,9 @@ def _detect_ambiguity(text: str, tema: list, location: str, mode: str) -> bool:
         return True
     
     # Paraules que s'expandeixen automàticament (no són ambiguas)
-    auto_expand_words = ["castell", "castells", "riu", "rius"]
+    auto_expand_words = ["castell", "castells", "riu", "rius", "cami", "camí", "camins", "senderes", "senderes"]
     if len(tema) == 1 and tema[0] in auto_expand_words:
-        # Aquestes paraules s'expandeixen automàticament, no són ambiguas
+        # Aquestes paraules s'expandeixen automàticament, no són ambigues
         return False
     
     # Paraules que poden ser cognoms o temes segons majúscula
@@ -1834,7 +2313,7 @@ def _detect_ambiguity(text: str, tema: list, location: str, mode: str) -> bool:
         return True
     
     # Mode no reconegut
-    if mode not in ["cerca", "llista", "resum", "conversa", "amplia", "arxiu", "nou"]:
+    if mode not in ["cerca", "llista", "resum", "conversa", "amplia", "arxiu", "creua", "nou", "article"]:
         return True
     
     return False
@@ -1874,6 +2353,56 @@ def _parse_query_fallback(text: str) -> Dict[str, Any]:
         "is_conversa": False,
         "is_ambiguous": is_ambiguous
     }
+
+def generar_resposta_sobre_article(doc: Doc, pregunta: str, uid: int) -> str:
+    """
+    Genera una resposta sobre l'article actual quan l'usuari fa preguntes.
+    """
+    logger.info(f"[ARTICLE-QA] Pregunta sobre article {doc.id}: '{pregunta}'")
+    
+    # Usa l'IA per respondre sobre l'article específic
+    try:
+        # Prepara el context de l'article
+        context_article = f"""
+Títol: {doc.title or 'Sense títol'}
+Autor: {doc.author or 'Autor desconegut'}
+Poble: {doc.population or 'Ubicació no especificada'}
+Període: {getattr(doc, 'years', '') or 'Període no especificat'}
+Resum: {doc.summary or ''}
+Contingut: {doc.summary_long or doc.content or ''}
+Temes: {', '.join(doc.topics) if doc.topics else 'No especificats'}
+"""
+        
+        # Crea el prompt per a l'IA
+        prompt = f"""Ets un assistent especialitzat en història local de la Ribera d'Ebre. 
+L'usuari està llegint un article específic i fa una pregunta sobre ell.
+
+ARTICLE ACTUAL:
+{context_article}
+
+PREGUNTA DE L'USUARI: {pregunta}
+
+Respon de manera natural i útil, basant-te únicament en la informació de l'article actual. 
+Si la pregunta no es pot respondre amb la informació disponible, explica-ho educadament.
+Mantén un to conversacional i amable."""
+
+        # Crida a l'IA
+        response = OPENAI.chat(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0.7
+        )
+        
+        if response and response.strip():
+            logger.info(f"[ARTICLE-QA] Resposta generada per article {doc.id}")
+            return response.strip()
+        else:
+            return "Ho sento, no he pogut processar la teva pregunta sobre aquest article. Pots reformular-la?"
+            
+    except Exception as e:
+        logger.error(f"[ARTICLE-QA] Error generant resposta: {e}")
+        return "Hi ha hagut un problema processant la teva pregunta. Torna-ho a intentar."
 
 def detectar_conversa(text: str) -> Optional[str]:
     """
@@ -1931,7 +2460,7 @@ def handle_text(uid: int, text: str):
     5️⃣ Genera resposta final
     """
     sess = sessions.get_session(uid)
-    logger.debug(f"[HANDLE] Inici per {uid} amb text='{text[:80]}'...")
+    # logger.debug(f"[HANDLE] Inici per {uid} amb text='{text[:80]}'...")
 
     # 📖 Gestiona mode article
     if sess.mode == "article":
@@ -1942,23 +2471,22 @@ def handle_text(uid: int, text: str):
         elif text_lower == "mes" or text == "/mes":
             # Mostra la següent pàgina
             return get_article_page(uid, sess.pagina_actual + 1)
+        elif text_lower in ["nou", "torna", "sortir", "exit"] or text == "/nou":
+            # Surt del mode article
+            sess.mode = "normal"
+            sess.last_article = None
+            return "🔄 Has sortit del mode article. Pots fer una nova consulta."
         else:
-            # Pregunta sobre l'article - fa cerca semàntica sobre el contingut
+            # Pregunta sobre l'article - usa la nova funció de QA
             if sess.last_article:
                 doc = id_to_doc.get(sess.last_article)
                 if doc:
-                    # Cerca dins del contingut de l'article
-                    content = doc.summary_long or doc.summary or ""
-                    if content and text_lower in normalize_text_local(content):
-                        # Si la pregunta està relacionada amb el contingut, respon
-                        return f"💬 Sobre l'article '{doc.title}':\n\nLa teva pregunta '{text}' està relacionada amb el contingut de l'article. Pots escriure `/llegir` per veure tot el contingut o fer preguntes més específiques."
-                    else:
-                        # Si no està relacionada amb l'article, surt del mode article i fa cerca normal
-                        sess.mode = "normal"
-                        logger.debug(f"[HANDLE] Surt del mode article per pregunta no relacionada: '{text}'")
-                        # Continua amb la cerca semàntica normal
+                    # logger.debug(f"[HANDLE] Pregunta sobre article {sess.last_article} en mode article")
+                    return generar_resposta_sobre_article(doc, text, uid)
+            return "No hi ha cap article obert. Obre un article primer amb `/id [número]`."
 
     # 🤖 IA analitza la consulta
+    logger.info(f"[USER-QUERY] Usuari {uid}: '{text}'")
     parsed = parse_query_with_ai(text)
     tema_list = parsed["tema"]
     location = parsed["location"]
@@ -1969,19 +2497,27 @@ def handle_text(uid: int, text: str):
     
     # 🤔 Gestiona ambigüitats
     if is_ambiguous:
+        logger.info(f"[AMBIGUOUS-QUERY] Consulta ambigua detectada: tema={tema_list}, location={location}, mode={mode}")
         return _handle_ambiguous_query(text, tema_list, location, mode)
     
     # 🗣️ Gestiona conversa si cal
     if is_conversa or mode == "conversa":
         # Si ja tenim una resposta de conversa del parsing, l'usem
         if resposta_conversa:
-            logger.debug(f"[HANDLE] Mode conversa activat → resposta del parsing enviada.")
+            # logger.debug(f"[HANDLE] Mode conversa activat → resposta del parsing enviada.")
             return resposta_conversa
+        
+        # Si estem en mode article i hi ha un article obert, gestiona preguntes sobre l'article
+        if sess.mode == "article" and sess.last_article:
+            doc = id_to_doc.get(sess.last_article)
+            if doc:
+                # logger.debug(f"[HANDLE] Pregunta sobre article {sess.last_article} detectada")
+                return generar_resposta_sobre_article(doc, text, uid)
         
         # Sinó, detectem-la ara
         resposta_conv = detectar_conversa(text)
         if resposta_conv:
-            logger.debug(f"[HANDLE] Mode conversa activat → resposta curta enviada.")
+            # logger.debug(f"[HANDLE] Mode conversa activat → resposta curta enviada.")
             return resposta_conv
     
     # 🔧 Gestiona comandes especials
@@ -1994,15 +2530,29 @@ def handle_text(uid: int, text: str):
             return "No hi ha cap tema recent per ampliar. Fes una consulta primer."
         # Usa el tema anterior per ampliar
         tema_list = sess.last_tema.split() if sess.last_tema else []
-        logger.debug(f"[HANDLE] Mode amplia - tema anterior: {tema_list}")
+        # logger.debug(f"[HANDLE] Mode amplia - tema anterior: {tema_list}")
     
     if mode == "llista":
         # Força mode llista independentment del que digui la IA
         mode = "llista"
     
     if mode == "arxiu":
-        # Força mode arxiu
+        # Força mode arxiu i neteja el tema per eliminar "arxiu"
         mode = "arxiu"
+        if tema_list and tema_list[0].lower() == "arxiu":
+            tema_list = tema_list[1:]  # Elimina "arxiu" del tema
+        
+        # Si hi ha una ubicació específica, mostra articles d'aquell poble (amb o sense tema)
+        if location != "tots":
+            # Mode arxiu amb ubicació específica - mostra llista d'articles d'aquell poble
+            tema_arxiu = " ".join(tema_list) if tema_list else "articles"
+            return compose_list_response(tema_arxiu, location)
+    
+    if mode == "creua":
+        # Força mode creua i neteja el tema per eliminar "creua"
+        mode = "creua"
+        if tema_list and tema_list[0].lower() == "creua":
+            tema_list = tema_list[1:]  # Elimina "creua" del tema
     
     # 🧩 Prepara tema i location nets
     tema_net = " ".join(tema_list) if tema_list else ""
@@ -2012,14 +2562,27 @@ def handle_text(uid: int, text: str):
     if poble_filter:
         sess.poble = poble_filter
     elif location == "tots":
-        sess.poble = None
+        sess.poble = "tots"
     
     sess.last_tema = tema_net
     log_session_state(sess, "[HANDLE-STATE]")
 
+    # 🔍 Anàlisi temporal de la consulta
+    tema_original = tema_net
+    any_inici, any_fi, segle = None, None, None
+    # logger.debug(f"[HANDLE] Variables temporals inicialitzades: any_inici={any_inici}, any_fi={any_fi}, segle={segle}")
+    
+    # Si el tema conté informació temporal, l'extreu
+    if tema_net:
+        tema_net, any_inici, any_fi, segle = parse_temporal_query(tema_net)
+        # logger.debug(f"[HANDLE] Després de parse_temporal_query: any_inici={any_inici}, any_fi={any_fi}, segle={segle}")
+        if any_inici or any_fi or segle:
+            logger.info(f"[HANDLE] Consulta temporal detectada: tema='{tema_net}', any_inici={any_inici}, any_fi={any_fi}, segle={segle}")
+
     # 🔍 Cerca semàntica
     try:
-        results = search_faiss(tema_net, poble_filter=poble_filter, top_k=8)
+        results = search_faiss(tema_net, poble_filter=poble_filter, top_k=8, 
+                              any_inici=any_inici, any_fi=any_fi, segle=segle)
     except Exception as e:
         logger.error(f"[HANDLE] Error durant la cerca FAISS: {e}")
         return "⚠️ S'ha produït un error durant la cerca semàntica."
@@ -2032,9 +2595,9 @@ def handle_text(uid: int, text: str):
         results = fb
 
     # 🧠 Genera resposta final
-    resposta_final = generar_resposta_final(sess, tema_net, poble_filter, results, mode=mode)
+    resposta_final = generar_resposta_final(sess, tema_net, poble_filter, results, mode=mode, any_inici=any_inici, any_fi=any_fi, segle=segle)
     sessions.add_to_memory(uid, resposta_final)
-    logger.debug(f"[HANDLE] Resposta generada per {uid}, len={len(resposta_final)}")
+    # logger.debug(f"[HANDLE] Resposta generada per {uid}, len={len(resposta_final)}")
 
     return resposta_final
 
@@ -2042,7 +2605,7 @@ def handle_text(uid: int, text: str):
 #---------------------------------------------------------------
 #--------CAPÇALERA: GENERACIÓ DE RESPOSTA FINAL ----------------
 #---------------------------------------------------------------
-def generar_resposta_final(sess, tema_net, poble, results, mode="resum"):
+def generar_resposta_final(sess, tema_net, poble, results, mode="resum", any_inici=None, any_fi=None, segle=None):
     """
     Combina la informació de FAISS, síntesi IA i format Markdown.
     Retorna la resposta final que s’enviarà a l’usuari.
@@ -2122,6 +2685,12 @@ def generar_resposta_final(sess, tema_net, poble, results, mode="resum"):
     # 🧱 3. Cos principal segons mode
     if mode == "llista":
         body = compose_list_response(tema_net, results, poble)
+    elif mode == "arxiu":
+        # Genera contingut d'arxiu naturalment
+        body = compose_arxiu_response(tema_net, results, poble)
+    elif mode == "creua":
+        # Genera contingut de creua naturalment
+        body = compose_creua_response(tema_net, results, poble)
     elif mode == "resum_breu":
         body = compose_summary_response(tema_net, results, poble, brief=True)
     else:
@@ -2139,7 +2708,15 @@ def generar_resposta_final(sess, tema_net, poble, results, mode="resum"):
 
     # 🏷️ 5. Header i footer contextual (Mode/Tema/Poble)
     # tema_net ja està netejat, l'usem directament
-    header = _build_header(mode, tema_net, poble)
+    try:
+        # logger.debug(f"[HANDLE] Abans de _build_header: mode={mode}, tema_net={tema_net}, poble={poble}, any_inici={any_inici}, any_fi={any_fi}, segle={segle}")
+        header = _build_header(mode, tema_net, poble, any_inici, any_fi, segle)
+    except Exception as e:
+        import traceback
+        logger.error(f"[ERROR] Error en _build_header: {e}")
+        logger.error(f"[ERROR] Traceback:\n{traceback.format_exc()}")
+        raise
+    
     footer = ""
 
     resposta = f"{header}\n{body_main.strip()}{footer}"
@@ -2245,45 +2822,38 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sessions.reset_session(uid)
     logger.info(f"[TG-HANDLER]/start usuari={uid}")
     await update.message.reply_text(
-        "👋 Benvingut al *MisCEREbot*!\n\n"
-        "Pots preguntar-me sobre temes, pobles o articles de la Ribera d’Ebre.\n"
-        "Exemples:\n• `Història del castell d’Ascó`\n• `Articles sobre Miravet`\n• `Arqueologia a la Ribera`\n\n"
+        "Benvingut al *MisCEREbot*! 🤖\n\n"
+        "Pots preguntar-me sobre temes, pobles o articles de la Ribera d’Ebre.\n\n"
         "Escriu /ajuda per veure totes les opcions.",
         parse_mode="Markdown"
     )
 
 async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler per /ajuda — mostra l’ajuda bàsica"""
+    """Handler per /ajuda — mostra l'ajuda bàsica"""
     logger.info(f"[TG-HANDLER]/ajuda uid={update.effective_user.id}")
-    ajuda_text = (
-        "📘 *MisCEREbot — Ajuda bàsica*\n\n"
-        "• Escriu un tema per cercar articles del corpus del CERE.\n\n"
-        "• Usa /poble NomDelPoble - per filtrar per poble.\n"
-        "• Usa /tema text per fixar un tema concret.\n"
-        "• /amplia - per obtenir més detalls del darrer tema.\n"
-        "• /mes o /tot - per veure resums previs o l’històric.\n"
-        "• /reset o /nou - per començar de nou.\n"
-        "• /expert - per mode avançat.\n"
-    )
+    try:
+        with open("data/ajuda.txt", "r", encoding="utf-8") as f:
+            ajuda_text = f.read()
+    except FileNotFoundError:
+        ajuda_text = "❌ No s'ha trobat el fitxer d'ajuda."
+    except Exception as e:
+        logger.error(f"[AJUDA] Error llegint fitxer: {e}")
+        ajuda_text = "❌ Error llegint l'ajuda."
+    
     await update.message.reply_text(ajuda_text, parse_mode="Markdown")
 
 async def expert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler per /expert — mostra ajuda avançada"""
     logger.info(f"[TG-HANDLER]/expert uid={update.effective_user.id}")
-    expert_text = (
-        "🤖 *MisCEREbot — Mode expert / Ajuda avançada*\n\n"
-        "El mode expert permet treballar directament sobre l’arxiu amb filtres i comandes específiques.\n\n"
-        "⚙️ *Filtres i context*\n"        
-        "• /poble NomDelPoble — Filtra tots els resultats pel poble indicat.\n"
-        "• /tema TextTema — Centra la cerca en un tema específic.\n"
-        "• /nou — Reinicia el context i neteja tots els filtres actius.\n\n"
-        "📚 *Accés i navegació*\n"
-        "• /arxiu — Mostra l’article obert o el corpus filtrat.\n"
-        "• /tot — Mostra tot el contingut consultat.\n"
-        "• /mes — Mostra la següent part d’un article llarg.\n"
-        "• /creua A B — Compara o sintetitza dos articles o temes.\n"
-        "• /ajuda — Ajuda bàsica.\n"
-    )
+    try:
+        with open("data/expert.txt", "r", encoding="utf-8") as f:
+            expert_text = f.read()
+    except FileNotFoundError:
+        expert_text = "❌ No s'ha trobat el fitxer d'ajuda expert."
+    except Exception as e:
+        logger.error(f"[EXPERT] Error llegint fitxer: {e}")
+        expert_text = "❌ Error llegint l'ajuda expert."
+    
     await update.message.reply_text(expert_text, parse_mode="Markdown")
 
 #---------------------------------------------------------------
@@ -2413,27 +2983,26 @@ async def handle_numeric_command(update: Update, context: ContextTypes.DEFAULT_T
 #--------CAPÇALERA: /ARXIU I /ARXIU_CERCA ----------------------
 #---------------------------------------------------------------
 async def cmd_arxiu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mostra la llista o contingut del corpus filtrat."""
+    """Mostra estadístiques de l'arxiu o anàlisi d'un topic específic."""
     uid = update.effective_user.id
     sess = sessions.get_session(uid)
-    poble = sess.poble or "tots"
-    logger.info(f"[TG-HANDLER]/arxiu uid={uid} poble={poble}")
-
-    results = search_faiss(sess.last_tema or "", poble_filter=sess.poble, top_k=12)
-    if not results:
-        await update.message.reply_text(f"⚠️ No hi ha resultats per al poble *{poble}*", parse_mode="Markdown")
-        return
-
-    header = _build_header("arxiu", (sess.last_tema or "(Sense tema)").strip(), sess.poble)
-    msg = header
-    for i, r in enumerate(results, start=1):
-        title = r.get("title", "Sense títol")
-        score = r.get("score", 0.0)
-        msg += f"{i}. [{title}](https://t.me/misCEREbot/{r.get('id')}) — {score:.2f}\n"
-
-    parts = split_for_telegram(msg)
+    args = context.args
+    
+    logger.info(f"[TG-HANDLER]/arxiu uid={uid} args={args}")
+    
+    if not args:
+        # Sense arguments: mostra estadístiques generals de l'arxiu
+        logger.info("[TG-HANDLER]/arxiu sense arguments - cridant analyze_corpus_topics")
+        text = analyze_corpus_topics()
+    else:
+        # Amb arguments: analitza el topic específic
+        topic = " ".join(args)
+        logger.info(f"[TG-HANDLER]/arxiu amb topic '{topic}' - cridant analyze_topic_importance")
+        text = analyze_topic_importance(topic)
+    
+    parts = split_for_telegram(text)
     for part in parts:
-        await send_long_message(update, part)
+        await send_long_message(update, part, parse_mode="Markdown")
                 
 async def cmd_arxiu_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cerca dins l’arxiu o corpus."""
@@ -2458,6 +3027,47 @@ async def cmd_arxiu_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{i}. [{title}](https://t.me/misCEREbot/{r.get('id')}) — {score:.2f}\n"
     for part in split_for_telegram(text):
         await send_long_message(update, part)
+
+async def cmd_llista(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comanda /llista - mostra llista d'articles per tema sense resum."""
+    uid = update.effective_user.id
+    sess = sessions.get_session(uid)
+    
+    # Obtenim el tema dels arguments
+    tema = " ".join(context.args) if context.args else ""
+    
+    if not tema:
+        await update.message.reply_text(
+            "ℹ️ Escriu un tema per fer la llista:\n"
+            "• `/llista castells`\n"
+            "• `/llista jaciments arqueològics`\n"
+            "• `/llista guerra civil`\n"
+            "• `/llista miravet`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    logger.info(f"[TG-HANDLER]/llista uid={uid} tema='{tema}'")
+    
+    # Actualitzem la sessió
+    sess.last_tema = tema
+    sess.last_mode = "llista"
+    
+    # Fem la cerca amb més resultats (20 en lloc de 12)
+    results = search_faiss(tema, poble_filter=sess.poble, top_k=20)
+    
+    # Utilitzem compose_list_response per gestionar el filtre de poble
+    text = compose_list_response(tema, results, sess.poble)
+    
+    # Afegim header personalitzat per la comanda /llista
+    if text.startswith("🗂️"):
+        # Si compose_list_response retorna el seu propi header, el substituïm
+        lines = text.split('\n', 1)
+        if len(lines) > 1:
+            body = lines[1]
+            text = f"📋 **LLISTA: {tema.upper()}**\n{body}"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 #---------------------------------------------------------------
 #--------CAPÇALERA: /CREUA -------------------------------------
@@ -2583,6 +3193,7 @@ def register_handlers(app):
     # Arxiu i cerca
     app.add_handler(CommandHandler("arxiu", cmd_arxiu))
     app.add_handler(CommandHandler("arxiu_cerca", cmd_arxiu_cerca))
+    app.add_handler(CommandHandler("llista", cmd_llista))
 
     # Funcions avançades
     app.add_handler(CommandHandler("creua", cmd_creua))
@@ -2826,80 +3437,5 @@ def main():
 #---------------------------------------------------------------
 #--------CAPÇALERA: EXECUCIÓ DIRECTA ---------------------------
 #---------------------------------------------------------------
-def regenerate_index_3072():
-    """Regenera l'índex FAISS amb embeddings de 3072 dimensions."""
-    print("🔄 Regenerant índex FAISS amb embeddings de 3072 dimensions...")
-    
-    # Carrega documents
-    print("📚 Carregant documents...")
-    docs = []
-    with open(METADATA_PATH, 'r', encoding='utf-8') as f:
-        for line in f:
-            docs.append(json.loads(line.strip()))
-    
-    print(f"✅ Carregats {len(docs)} documents")
-    
-    # Carrega embeddings existents
-    print("🧮 Carregant embeddings existents...")
-    if EMB_PATH.exists():
-        embeddings = np.load(EMB_PATH)
-        print(f"✅ Carregats embeddings: {embeddings.shape}")
-    else:
-        print("❌ No s'han trobat embeddings. Generant-los...")
-        # Genera embeddings amb OpenAI
-        embeddings = []
-        for i, doc in enumerate(docs):
-            if i % 10 == 0:
-                print(f"   Processant document {i+1}/{len(docs)}...")
-            
-            # Crea text per embedding
-            text_parts = []
-            if doc.get('title'):
-                text_parts.append(doc['title'])
-            if doc.get('summary'):
-                text_parts.append(doc['summary'])
-            if doc.get('topics'):
-                text_parts.extend(doc['topics'])
-            
-            text = ' '.join(text_parts)
-            
-            # Genera embedding
-            try:
-                emb = OPENAI.embed(model="text-embedding-3-large", text=text)
-                embeddings.append(emb)
-            except Exception as e:
-                print(f"⚠️  Error generant embedding per doc {i}: {e}")
-                # Usa embedding zero com a fallback
-                embeddings.append(np.zeros(3072, dtype=np.float32))
-        
-        # Converteix a array numpy
-        embeddings = np.array(embeddings, dtype=np.float32)
-        print(f"✅ Generats {embeddings.shape[0]} embeddings de {embeddings.shape[1]} dimensions")
-        
-        # Guarda embeddings
-        print("💾 Guardant embeddings...")
-        np.save(EMB_PATH, embeddings)
-    
-    # Crea nou índex FAISS
-    print("🔍 Creant índex FAISS...")
-    vector_index = faiss.IndexFlatIP(embeddings.shape[1])  # 3072 dimensions
-    
-    # Normalitza embeddings
-    emb_norm = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-9)
-    
-    # Afegeix embeddings a l'índex
-    vector_index.add(emb_norm)
-    
-    # Guarda l'índex
-    print("💾 Guardant índex FAISS...")
-    faiss.write_index(vector_index, str(FAISS_INDEX_PATH))
-    
-    print(f"✅ Índex FAISS regenerat amb {vector_index.ntotal} vectors de {embeddings.shape[1]} dimensions")
-    print(f"📁 Guardat a: {FAISS_INDEX_PATH}")
-
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "regenerate":
-        regenerate_index_3072()
-    else:
-        main()
+    main()

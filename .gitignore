@@ -85,3 +85,7 @@ old2/
 # Fitxers de Railway
 .railway/
 railway.log
+scripts/
+
+# Carpeta amb dades antiques (no calen a GitHub)
+data/data_old/
